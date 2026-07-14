@@ -1,0 +1,10 @@
+# Core (dashboards + retros)
+pandas
+requests
+openpyxl
+
+# Only needed if the capacity workbook is a Google Sheet read via a service
+# account (CAPACITY_XLSX = a Sheets URL + CAPACITY_SA_KEY). Safe to install
+# regardless; harmless if you use a local .xlsx or a public link instead.
+google-api-python-client
+google-auth

@@ -1,0 +1,20 @@
+{
+  "_readme": "Add manual overrides here. Re-run generate_sprint_dashboard.py to apply. No Claude needed.",
+
+  "excluded_ids": [63988, 64547, 64548, 64545, 64546],
+
+  "pbi_state_overrides": {
+    "_readme": "Force a specific PBI's state for metric calculations only (does not change Excel). Format: {\"<WorkItemID>\": \"<ForcedState>\"}",
+    "example_62999": "Dev In Progress"
+  },
+
+  "goal_overrides": {
+    "_readme": "Force a PBI into a specific goal bucket. Format: {\"<WorkItemID>\": \"<GoalName>\"}",
+    "example_63001": "Live"
+  },
+
+  "notes": [
+    "Sprint 79 Day 1: Removed Priyanka Kusal tasks (63988,64547,64548,64545,64546) - incorrect sprint assignment",
+    "QAComplete goal: only ST To Do / LIVE / Ready For LIVE / QA Complete count as done (per PO)"
+  ]
+}
