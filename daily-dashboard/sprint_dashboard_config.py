@@ -124,7 +124,6 @@ OUTPUT_HTML        = f"Sprint{SPRINT_NUMBER}_Dashboard_Day{DISPLAY_SPRINT_DAY}.h
 TEAMS = {
     "Calmers": [
         "Priya Mandhare",
-        "Sumit Anpat",
         "Sandesh Tendulkar",
         "Suraj Marathe",
         "Gautam Gehlot",
@@ -139,8 +138,6 @@ TEAMS = {
         "Abhisha Jain",
         "vivek ghorpade",
         "Heeru Gujar",
-        # "Parth Biramwar" — excluded: QA Manager, work is management-focused
-        #                   and shouldn't roll into team delivery metrics.
         "Sneha Dafale",
         "Rahul Patil",
         "Suyog Joshi",
@@ -211,10 +208,7 @@ INPROGRESS_STATES = [
     "PO Approved", "Ready for Tech Analysis", "Tech Analysis In Progress",
     "BA Analysis", "Technical Review", "Ready for Dev", "In Progress", "PR",
     "Ready for QA", "QA", "QA Passed", "ST To Do", "ST In Progress",
-    "Selected for Development",
-    # legacy TFS
-    "Dev In Progress", "QA In Progress", "Dev Completed", "QA Complete",
-    "Analysis In Progress", "Analysis Complete", "In Refinement",
+    "Selected for Development"
 ]
 
 # Sub-task / Task "in progress" — works for both JIRA ("In Progress") and TFS.
