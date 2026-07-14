@@ -45,4 +45,4 @@ See **`daily-dashboard/README.md`** and **`retro-dashboards/README.md`** for ful
 
 ## What is NOT committed
 
-Secrets, the capacity workbook, and all generated data (snapshots, reports, logs, dashboard HTML) are git-ignored — see `.gitignore`. Clone the repo, add your credentials, and the scripts regenerate everything.
+Secrets, and all generated data (snapshots, reports, logs, dashboard HTML) are git-ignored — see `.gitignore`. Clone the repo, add your credentials, and the scripts regenerate everything.
