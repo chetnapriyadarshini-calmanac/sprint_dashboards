@@ -533,6 +533,11 @@ def classify_pbis(df_pbis, df_tasks, df_raw_all):
                 jira_team = max(_tc, key=_tc.get)
         team = _short_team(jira_team) or "—"
         goal_dates = goal_target_dates(goal, tags)
+        # Individual completion dates (date objects) for per-goal ordering.
+        dev_dt  = parse_dev_date(tags)
+        qa_dt   = parse_qa_date(tags)
+        tech_dt = parse_tech_date(tags)
+        sort_date = dev_dt or qa_dt or tech_dt   # generic fallback order
 
         pbis_out.append({
             "id":          pbi_id,
@@ -547,6 +552,10 @@ def classify_pbis(df_pbis, df_tasks, df_raw_all):
             "release":     release,
             "team":        team,
             "goal_dates":  goal_dates,
+            "sort_date":   sort_date,
+            "dev_date":    dev_dt,
+            "qa_date":     qa_dt,
+            "tech_date":   tech_dt,
             "task_done":   task_done,
             "task_total":  task_total,
             "est_h":       est_h,
@@ -1332,14 +1341,30 @@ def build_goal_bucket(goal_name, pbis_in_goal):
     team_order = list(CFG.TEAMS.keys())
     by_team = {}
     for p in pbis_in_goal:
-        by_team.setdefault(p.get("name") or "—", []).append(p)
+        by_team.setdefault(p.get("team") or "—", []).append(p)
     # config teams first (in order), then any other named teams (alpha), "—" last
     ordered = [t for t in team_order if t in by_team]
     ordered += sorted(t for t in by_team if t not in team_order and t != "—")
     if "—" in by_team:
         ordered.append("—")
 
+    # Within a team, order by the date THIS goal is measured against:
+    #   Ready for Tech Analysis -> Refinement date; Ready for Dev -> Dev date;
+    #   Ready for QA -> QA date; otherwise the generic earliest date.
+    _gn = str(goal_name or "").lower().replace(" ", "").replace("-", "").replace("_", "")
+    if "techanalysis" in _gn or "analysiscomplete" in _gn:
+        _date_key = "tech_date"
+    elif "readyforqa" in _gn or "qacomplete" in _gn:
+        _date_key = "qa_date"
+    elif "readyfordev" in _gn or "devcomplete" in _gn:
+        _date_key = "dev_date"
+    else:
+        _date_key = "sort_date"
+
     def _team_subsection(team_label, members):
+        from datetime import date as _date
+        members = sorted(members, key=lambda p: (p.get(_date_key) is None,
+                                                  p.get(_date_key) or _date.min))
         d = sum(1 for p in members if p["state"] in done_states)
         head = (
             f'<div style="display:flex;align-items:center;gap:8px;margin:12px 0 4px;'

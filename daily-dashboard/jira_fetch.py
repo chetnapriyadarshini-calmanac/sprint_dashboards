@@ -120,7 +120,6 @@ def _resolve_date_fields(ctx) -> None:
         print(f"   📅 Completion-date fields — Tech Analysis: "
               f"{_F_TECH_DATE or '⚠ NOT FOUND'}, Dev: {_F_DEV_DATE or '⚠ NOT FOUND'}, "
               f"QA: {_F_QA_DATE or '⚠ NOT FOUND'}")
-        print(f"   👥 Team fields: {_F_TEAMS or '⚠ NONE FOUND'}")
         if not (_F_TECH_DATE and _F_DEV_DATE and _F_QA_DATE):
             print("      (a 'NOT FOUND' means the JIRA field name differs from "
                   "'Tech Analysis Complete Date'/'Dev Complete Date'/'QA Complete "
