@@ -89,23 +89,41 @@ JIRA_SPRINT_NAME   = JIRA_SPRINT_NAMES[0] if JIRA_SPRINT_NAMES else "MPM Sprint 
 # -- Capacity source ----------------------------------------------------------
 # The maintained capacity workbook (the team updates it each sprint). Model:
 #   Sprint cap = Capacity/day × (Working days − Team days off − Days off)
-# Set the Working days / Team days off on the workbook's Settings sheet, and keep
-# the Capacity sheet (Team, Member, Activity, Capacity/day, Days off) current.
+# Whichever source you use must have a "Settings" sheet (Working days in B5,
+# Team days off in B6) and a "Capacity" sheet (Team, Member, Activity,
+# Capacity/day, Days off).
 #
-# CURRENT SETUP: the workbook Team_Capacity.xlsx lives IN THE REPO (next to this
-# file) and is committed to git — the capacity data isn't sensitive, so this is
-# the simplest option: anyone who clones the repo can run the dashboard with no
-# credentials or Drive access. To update it, edit Team_Capacity.xlsx and commit.
-# The path is RELATIVE, so it resolves next to the generator on any machine.
+# CURRENT SETUP: live Google Sheet, read as YOU via OAuth. On the first run a
+# browser opens to sign in with your motivity account and grant read-only Drive
+# access; the token is cached (see CAPACITY_OAUTH_TOKEN) and refreshed
+# automatically after that. One-time setup (see the README for detail):
+#   1. Create an OAuth Client ID ("Desktop app") in a Google Cloud project and
+#      enable the Google Drive API; download client_secret.json.
+#   2. Save it as `.gcp_oauth_client.json` at the repo root (git-ignored), or
+#      set CAPACITY_OAUTH_CLIENT below to its path.
+#   3. pip install google-api-python-client google-auth google-auth-oauthlib
+#   4. Set CAPACITY_XLSX to the Sheet URL.
+# For an UNATTENDED daily job, seed the token once interactively; the app should
+# be an "Internal" OAuth app so the refresh token does not expire weekly.
 #
-# CAPACITY_XLSX also accepts (not currently used):
-#   * an absolute LOCAL .xlsx path (e.g. r"G:\My Drive\Team_Capacity.xlsx"), or
-#   * a Google Sheet / direct .xlsx URL — public, or (if CAPACITY_SA_KEY is set)
-#     read via a service account. See capacity_excel.py / the README.
-CAPACITY_XLSX = "Team_Capacity.xlsx"
+# CAPACITY_XLSX also accepts (fallbacks):
+#   * "Team_Capacity.xlsx" — the workbook committed in this folder (no auth), or
+#   * an absolute local .xlsx path, or a service-account / public Sheet URL.
+CAPACITY_XLSX = "https://docs.google.com/spreadsheets/d/19rc7W5mgR9PoJVWAzdU8Y0zA8pz4mbND/edit?usp=drive_link&ouid=101446380543586458847&rtpof=true&sd=true"
+#"https://docs.google.com/spreadsheets/d/REPLACE_WITH_SHEET_ID/edit"
 
-# Service-account JSON key path — only used when CAPACITY_XLSX is a Google Sheet
-# URL. Leave None for the in-repo workbook or a local path.
+
+# OAuth client-secret JSON path. None -> auto-discover `.gcp_oauth_client.json`
+# (repo root or this folder). Only used when CAPACITY_XLSX is a Google Sheet URL
+# and no service-account key is present.
+CAPACITY_OAUTH_CLIENT = None
+
+# Where to cache the OAuth token. None -> `.gcp_oauth_token.json` next to the
+# client-secret file. Git-ignored. Delete it to force re-consent.
+CAPACITY_OAUTH_TOKEN = None
+
+# Service-account JSON key path — an alternative to OAuth for a Google Sheet.
+# Leave None to use OAuth / local file.
 CAPACITY_SA_KEY = None
 
 # -- Output File --------------------------------------------------------------

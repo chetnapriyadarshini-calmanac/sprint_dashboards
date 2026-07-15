@@ -63,10 +63,15 @@ F_EPIC_LINK    = "customfield_10014"   # Epic Link (fallback to `parent` on newe
 _F_TECH_DATE = None   # resolved id for "Tech Analysis Complete Date"
 _F_DEV_DATE  = None    # resolved id for "Dev Complete Date"
 _F_QA_DATE   = None    # resolved id for "QA Complete Date"
+_F_TEAMS: list[str] = []   # resolved ids of ALL "Team"-like fields (first non-empty wins)
 _DATE_FIELDS_RESOLVED = False
 
+# Field names that indicate a team-assignment field.
+_TEAM_FIELD_NAMES = ("team", "team name", "squad", "delivery team")
+
 _DASHBOARD_COLS = ["ID", "Title", "Work Item Type", "State", "Assigned To",
-                   "Iteration Path", "Tags", "Original Estimate", "Completed Work"]
+                   "Iteration Path", "Tags", "Original Estimate", "Completed Work",
+                   "Sizing", "Release", "Team"]
 
 _FIELDS = ["summary", "issuetype", "status", "assignee", "labels", "parent",
            "fixVersions", "timeoriginalestimate", "timespent",
@@ -77,23 +82,45 @@ def _resolve_date_fields(ctx) -> None:
     """Resolve the 'Dev Complete Date' / 'QA Complete Date' custom-field IDs by
     name (once) and add them to the requested fields, so each issue's actual
     completion dates come through. Safe to call repeatedly."""
-    global _F_TECH_DATE, _F_DEV_DATE, _F_QA_DATE, _DATE_FIELDS_RESOLVED
+    global _F_TECH_DATE, _F_DEV_DATE, _F_QA_DATE, _F_TEAMS, _DATE_FIELDS_RESOLVED
     if _DATE_FIELDS_RESOLVED:
         return
     _DATE_FIELDS_RESOLVED = True
     try:
         r = ctx["session"].get(f"{ctx['api_v3']}/field", timeout=ctx["timeout"])
         r.raise_for_status()
-        by_name = {(f.get("name") or "").strip().lower(): f.get("id") for f in r.json()}
-        _F_TECH_DATE = by_name.get("tech analysis complete date")
+        raw_fields = r.json()
+        by_name = {(f.get("name") or "").strip().lower(): f.get("id") for f in raw_fields}
+        _F_TECH_DATE = (by_name.get("tech analysis complete date")
+                        or by_name.get("refinement complete date")
+                        or by_name.get("refinement complete"))
         _F_DEV_DATE  = by_name.get("dev complete date")
         _F_QA_DATE   = by_name.get("qa complete date")
-        for fid in (_F_TECH_DATE, _F_DEV_DATE, _F_QA_DATE):
+        # Collect EVERY team-like field (exact-name candidates first, then any
+        # whose name contains 'team'/'squad'). _team() reads them in this order
+        # and uses the first that's populated — teams may live on the Story in
+        # one field and on sub-tasks in another.
+        team_ids: list[str] = []
+        for f in raw_fields:
+            nm = (f.get("name") or "").strip().lower()
+            if nm in _TEAM_FIELD_NAMES:
+                fid = f.get("id")
+                if fid and fid not in team_ids:
+                    team_ids.append(fid)
+        for f in raw_fields:
+            nm = (f.get("name") or "").strip().lower()
+            if ("team" in nm or "squad" in nm):
+                fid = f.get("id")
+                if fid and fid not in team_ids:
+                    team_ids.append(fid)
+        _F_TEAMS = team_ids
+        for fid in [_F_TECH_DATE, _F_DEV_DATE, _F_QA_DATE, *_F_TEAMS]:
             if fid and fid not in _FIELDS:
                 _FIELDS.append(fid)
         print(f"   📅 Completion-date fields — Tech Analysis: "
               f"{_F_TECH_DATE or '⚠ NOT FOUND'}, Dev: {_F_DEV_DATE or '⚠ NOT FOUND'}, "
               f"QA: {_F_QA_DATE or '⚠ NOT FOUND'}")
+        print(f"   👥 Team fields: {_F_TEAMS or '⚠ NONE FOUND'}")
         if not (_F_TECH_DATE and _F_DEV_DATE and _F_QA_DATE):
             print("      (a 'NOT FOUND' means the JIRA field name differs from "
                   "'Tech Analysis Complete Date'/'Dev Complete Date'/'QA Complete "
@@ -208,6 +235,55 @@ def _assignee(fields: dict[str, Any]) -> str:
     return a.get("displayName", "") if isinstance(a, dict) else ""
 
 
+def _sizing(fields: dict[str, Any]) -> str:
+    """T-shirt Sizing (customfield_11566). Option fields come back as a dict
+    {'value': 'M'} (or a list of such); tolerate a plain string too."""
+    v = fields.get(F_SIZING)
+    if isinstance(v, dict):
+        return str(v.get("value") or v.get("name") or "").strip()
+    if isinstance(v, list) and v:
+        first = v[0]
+        if isinstance(first, dict):
+            return str(first.get("value") or first.get("name") or "").strip()
+        return str(first).strip()
+    return str(v).strip() if v else ""
+
+
+def _fix_version(fields: dict[str, Any]) -> str:
+    """Release tag(s) from fixVersions -> comma-joined names (e.g. 'REL-AUG-26')."""
+    fvs = fields.get("fixVersions") or []
+    names = []
+    for fv in fvs:
+        n = fv.get("name") if isinstance(fv, dict) else str(fv)
+        if n:
+            names.append(str(n).strip())
+    return ", ".join(names)
+
+
+def _team_value(v: Any) -> str:
+    """Extract a team name from one field value. Handles a team object
+    {'name'/'title': ...}, a select-option {'value': ...}, a list of those, or a
+    plain string. Returns '' if empty."""
+    if v is None:
+        return ""
+    if isinstance(v, list):
+        v = v[0] if v else None
+    if isinstance(v, dict):
+        return str(v.get("name") or v.get("title") or v.get("value")
+                   or v.get("displayName") or "").strip()
+    return str(v).strip()
+
+
+def _team(fields: dict[str, Any]) -> str:
+    """Team assignment: read each resolved team-like field (see
+    _resolve_date_fields) and return the first that's populated. '' if none."""
+    for fid in _F_TEAMS:
+        val = _team_value(fields.get(fid))
+        if val:
+            return val
+    return ""
+
+
 def _sprint_name(fields: dict[str, Any]) -> str:
     """Sprint field is a list of sprint objects; prefer the active one, else last."""
     sprints = fields.get(F_SPRINT) or []
@@ -300,6 +376,9 @@ def _pbi_row(issue: dict[str, Any], sprint_number: int,
                           + _date_tokens(f)),
         "Original Estimate": est,
         "Completed Work": spent,
+        "Sizing": _sizing(f),
+        "Release": _fix_version(f),
+        "Team": _team(f),
     }
 
 
@@ -321,6 +400,9 @@ def _epic_pbi_row(epic_key: str, epic_title: str | None,
         "Tags": ", ".join((f.get("labels") or []) + [t for t in [_goal_tag(f, sprint_number)] if t]),
         "Original Estimate": 0.0,
         "Completed Work": 0.0,
+        "Sizing": _sizing(f),
+        "Release": _fix_version(f),
+        "Team": _team(f),
     }
 
 
@@ -347,6 +429,9 @@ def _story_pbi_row(issue: dict[str, Any], epic_name: str | None,
                           + _date_tokens(f)),
         "Original Estimate": 0.0,
         "Completed Work": 0.0,
+        "Sizing": _sizing(f),
+        "Release": _fix_version(f),
+        "Team": _team(f),
     }
 
 
@@ -364,6 +449,7 @@ def _task_row(issue: dict[str, Any]) -> dict[str, Any]:
         "Tags": ", ".join(f.get("labels") or []),
         "Original Estimate": est,
         "Completed Work": spent,
+        "Team": _team(f),
     }
 
 
@@ -380,6 +466,9 @@ def _bug_row(issue: dict[str, Any]) -> dict[str, Any]:
         "Tags": ", ".join(f.get("labels") or []),
         "Original Estimate": est,
         "Completed Work": spent,
+        "Sizing": _sizing(f),
+        "Release": _fix_version(f),
+        "Team": _team(f),
     }
 
 

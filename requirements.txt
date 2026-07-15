@@ -3,8 +3,10 @@ pandas
 requests
 openpyxl
 
-# Only needed if the capacity workbook is a Google Sheet read via a service
-# account (CAPACITY_XLSX = a Sheets URL + CAPACITY_SA_KEY). Safe to install
-# regardless; harmless if you use a local .xlsx or a public link instead.
+# Needed only when the capacity workbook is a Google Sheet URL:
+#   - OAuth "read as you" (current setup) uses all three, incl. google-auth-oauthlib
+#   - service account uses google-api-python-client + google-auth
+# Harmless to install if you use the committed .xlsx or a public link instead.
 google-api-python-client
 google-auth
+google-auth-oauthlib

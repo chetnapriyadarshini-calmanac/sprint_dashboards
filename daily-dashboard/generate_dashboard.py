@@ -270,6 +270,8 @@ def _load_capacity():
     import capacity_excel
     src = getattr(CFG, "CAPACITY_XLSX", "Team_Capacity.xlsx")
     sa_key = getattr(CFG, "CAPACITY_SA_KEY", None)
+    oauth_client = getattr(CFG, "CAPACITY_OAUTH_CLIENT", None)
+    oauth_token = getattr(CFG, "CAPACITY_OAUTH_TOKEN", None)
     if isinstance(src, str) and src.lower().startswith(("http://", "https://")):
         source = src                       # URL — pass through unchanged
         label = src
@@ -277,7 +279,9 @@ def _load_capacity():
         source = Path(src) if Path(src).is_absolute() else (script_dir / src)
         label = source.name
     print(f"📒 Reading capacity from {label} ...")
-    df_cap = capacity_excel.load_dataframe(source, sa_key=sa_key)
+    df_cap = capacity_excel.load_dataframe(source, sa_key=sa_key,
+                                           oauth_client=oauth_client,
+                                           oauth_token=oauth_token)
     n_members = df_cap["Member"].nunique() if not df_cap.empty else 0
     total = df_cap["Sprint cap"].sum() if not df_cap.empty else 0
     print(f"📒 Capacity rows: {len(df_cap)} ({n_members} members, {total:.0f}h total)")
@@ -478,6 +482,7 @@ def classify_pbis(df_pbis, df_tasks, df_raw_all):
         elif wtype == "Task" and current_pbi_id is not None and rid not in EXCLUDED_IDS:
             task_by_parent.setdefault(current_pbi_id, []).append(row)
 
+    member_to_team = {m: t for t, ms in CFG.TEAMS.items() for m in ms}
     pbis_out = []
     for _, row in df_pbis.iterrows():
         pbi_id   = _coerce_id(row["ID"])
@@ -488,6 +493,10 @@ def classify_pbis(df_pbis, df_tasks, df_raw_all):
         hotfix   = extract_hotfix(tags)
         assignee = str(row["Assigned To"])
         title    = str(row["Title"])
+        size     = str(row.get("Sizing", "") or "").strip()
+        release  = str(row.get("Release", "") or "").strip()
+        # Display the canonical roster name on the card (normalise dotted usernames).
+        assignee = _canonical_person(assignee)
 
         if wtype == "Bug":
             # Bugs are leaf items on this template — they hold their own
@@ -510,6 +519,21 @@ def classify_pbis(df_pbis, df_tasks, df_raw_all):
             spent_h     = sum(float(t.get("Completed Work", 0) or 0) for t in my_tasks)
             done_states = CFG.GOAL_DONE_STATES.get(goal, CFG.GOAL_DONE_STATES["_default"]) if goal else []
 
+        # Team from the JIRA Team field ONLY: the Story/Epic's own value, else
+        # derived from its sub-tasks (which carry the Team field even when the
+        # Story doesn't). Majority wins. Shortened to the team label; unset -> "—".
+        jira_team = str(row.get("Team", "") or "").strip()
+        if not jira_team and my_tasks:
+            _tc = {}
+            for _t in my_tasks:
+                _tv = str(_t.get("Team", "") or "").strip()
+                if _tv:
+                    _tc[_tv] = _tc.get(_tv, 0) + 1
+            if _tc:
+                jira_team = max(_tc, key=_tc.get)
+        team = _short_team(jira_team) or "—"
+        goal_dates = goal_target_dates(goal, tags)
+
         pbis_out.append({
             "id":          pbi_id,
             "type":        wtype,            # "Product Backlog Item" or "Bug"
@@ -519,6 +543,10 @@ def classify_pbis(df_pbis, df_tasks, df_raw_all):
             "tags":        tags,
             "goal":        goal,
             "hotfix":      hotfix,
+            "size":        size,
+            "release":     release,
+            "team":        team,
+            "goal_dates":  goal_dates,
             "task_done":   task_done,
             "task_total":  task_total,
             "est_h":       est_h,
@@ -757,6 +785,37 @@ def parse_target_date(tags_str):
     if d:
         return d, "Dev Done"
     return None, None
+
+
+def _fmt_date(d):
+    return d.strftime("%d %b %Y") if hasattr(d, "strftime") else (str(d) if d else "")
+
+
+def goal_target_dates(goal, tags_str):
+    """Completion dates to show for a goal, as a list of (label, date) for each
+    date that is actually present:
+        Ready for Tech Analysis -> Refinement complete
+        Ready for Dev           -> Refinement complete (if present) + Dev complete + QA complete
+        Ready for QA            -> Dev complete + QA complete
+    """
+    g = str(goal or "").lower().replace(" ", "").replace("-", "").replace("_", "")
+    if "techanalysis" in g or "analysiscomplete" in g:
+        plan = [(parse_tech_date, "Refinement complete")]
+    elif "readyfordev" in g or "devcomplete" in g:
+        plan = [(parse_tech_date, "Refinement complete"),
+                (parse_dev_date, "Dev complete"),
+                (parse_qa_date, "QA complete")]
+    elif "readyforqa" in g or "qacomplete" in g:
+        plan = [(parse_dev_date, "Dev complete"),
+                (parse_qa_date, "QA complete")]
+    else:
+        return []
+    out = []
+    for parser, label in plan:
+        ds = _fmt_date(parser(tags_str))
+        if ds:
+            out.append((label, ds))
+    return out
 
 
 def build_dev_tracker(pbis):
@@ -1130,6 +1189,66 @@ def build_task_row(task):
             f'<td style="padding:5px 8px;text-align:center;font-size:11px;color:#16a34a">{int(spent)}h</td>'
             f'</tr>')
 
+def _norm_person(s) -> frozenset:
+    """Normalise a person name to a token set, tolerant of dotted usernames vs
+    display names: 'gautam.gehlot' -> {'gautam','gehlot'} == 'Gautam Gehlot'."""
+    s = re.sub(r"[._\-]+", " ", str(s or "").lower())
+    return frozenset(t for t in s.split() if t)
+
+
+# Precomputed roster (token set, team, canonical display name) from CFG.TEAMS.
+_ROSTER_TOKENS = [(_norm_person(m), t, m) for t, ms in CFG.TEAMS.items() for m in ms]
+
+
+def _assignee_team(assignee: str) -> str:
+    """Map a JIRA assignee to a config team by token-set match. '' if no match."""
+    toks = _norm_person(assignee)
+    if not toks:
+        return ""
+    for rt, team, _disp in _ROSTER_TOKENS:
+        if rt and (rt == toks or rt <= toks or toks <= rt):
+            return team
+    return ""
+
+
+def _canonical_person(assignee: str) -> str:
+    """Return the roster's canonical display name for an assignee when it matches
+    ('gautam.gehlot' -> 'Gautam Gehlot'); otherwise the original string."""
+    toks = _norm_person(assignee)
+    if not toks:
+        return assignee
+    for rt, _team, disp in _ROSTER_TOKENS:
+        if rt and (rt == toks or rt <= toks or toks <= rt):
+            return disp
+    return assignee
+
+
+def _match_config_team(raw: str) -> str:
+    """Map a raw team string (e.g. 'MPM Calmers') onto a config team key, or ''
+    if it isn't recognisably one of the configured teams."""
+    r = (raw or "").strip()
+    if not r:
+        return ""
+    rl = r.lower()
+    for k in CFG.TEAMS:
+        kl = k.lower()
+        if kl == rl or kl in rl or rl in kl:
+            return k
+    return ""
+
+
+def _short_team(name: str) -> str:
+    """Shorten a JIRA Team field name to its team label for the group header:
+    'Knackers – Ops, Compliance & Utilization' -> 'Knackers',
+    'MPM Calmers(RCM)' -> 'Calmers'. Empty stays empty."""
+    s = str(name or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"^mpm\s+", "", s, flags=re.I)          # drop a leading "MPM "
+    s = re.split(r"\s*[–—\-(]\s*", s, maxsplit=1)[0]     # cut at first dash/paren
+    return s.strip()
+
+
 def build_pbi_card(pbi, idx, goal, scope="g"):
     pid    = pbi["id"]
     title  = pbi["title"]
@@ -1140,6 +1259,22 @@ def build_pbi_card(pbi, idx, goal, scope="g"):
     if pbi["hotfix"]:
         hotfix_badge = (f'<span style="background:#fef2f2;color:#dc2626;padding:1px 6px;'
                         f'border-radius:8px;font-size:10px;font-weight:700">{pbi["hotfix"]}</span>')
+
+    size_badge = ""
+    if pbi.get("size"):
+        size_badge = (f'<span title="Story sizing" style="background:#eef2ff;color:#4338ca;'
+                      f'padding:1px 6px;border-radius:8px;font-size:10px;font-weight:700">'
+                      f'{pbi["size"]}</span>')
+    rel_badge = ""
+    if pbi.get("release"):
+        rel_badge = (f'<span title="Release / Fix Version" style="background:#ecfeff;color:#0e7490;'
+                     f'padding:1px 6px;border-radius:8px;font-size:10px;font-weight:600">'
+                     f'{pbi["release"]}</span>')
+    date_badge = ""
+    for _lbl, _ds in pbi.get("goal_dates", []):
+        date_badge += (f'<span title="Goal target date" style="background:#f0fdf4;color:#15803d;'
+                       f'padding:1px 6px;border-radius:8px;font-size:10px;font-weight:600;margin-left:2px">'
+                       f'📅 {_lbl}: {_ds}</span>')
 
     prg_badge = pbi_progress_badge(state, done_st, CFG.INPROGRESS_STATES)
     task_sum  = (f'{pbi["task_done"]}/{pbi["task_total"]} tasks&nbsp;|&nbsp;'
@@ -1162,7 +1297,7 @@ def build_pbi_card(pbi, idx, goal, scope="g"):
 </table></div>"""
 
     uid = f"pb-{scope}-{pid}"
-    return f"""<div onclick="var e=document.getElementById('{uid}'),i=document.getElementById('{uid}-i');if(e.style.display==='none'){{e.style.display='block';i.textContent='−'}}else{{e.style.display='none';i.textContent='+'}}" style="display:flex;align-items:center;gap:8px;padding: 10px 14px; cursor: pointer; background: rgb(255, 255, 255); user-select: none;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='#fff'"><span id="{uid}-i" style="color:#94a3b8;font-size:12px;flex-shrink:0;width:12px;text-align:center">+</span><div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:2px"><span style="font-size:11px;color:#94a3b8">#{pid}</span>{hotfix_badge}{state_badge(state)} </div><div style="font-size:13px;font-weight:500;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{title}</div><div style="font-size:11px;color:#64748b;margin-top:1px">{pbi["assignee"]}</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">{prg_badge}<span style="font-size:10px;color:#94a3b8">{task_sum}</span></div></div><div id="{uid}" style="display:none;padding:12px 14px;border-top:1px solid #f1f5f9;background:#fafafa">{task_table}</div>"""
+    return f"""<div onclick="var e=document.getElementById('{uid}'),i=document.getElementById('{uid}-i');if(e.style.display==='none'){{e.style.display='block';i.textContent='−'}}else{{e.style.display='none';i.textContent='+'}}" style="display:flex;align-items:center;gap:8px;padding: 10px 14px; cursor: pointer; background: rgb(255, 255, 255); user-select: none;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='#fff'"><span id="{uid}-i" style="color:#94a3b8;font-size:12px;flex-shrink:0;width:12px;text-align:center">+</span><div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:2px"><span style="font-size:11px;color:#94a3b8">#{pid}</span>{hotfix_badge}{state_badge(state)}{size_badge}{rel_badge}{date_badge} </div><div style="font-size:13px;font-weight:500;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{title}</div><div style="font-size:11px;color:#64748b;margin-top:1px">{pbi["assignee"]}</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">{prg_badge}<span style="font-size:10px;color:#94a3b8">{task_sum}</span></div></div><div id="{uid}" style="display:none;padding:12px 14px;border-top:1px solid #f1f5f9;background:#fafafa">{task_table}</div>"""
 
 def build_goal_bucket(goal_name, pbis_in_goal):
     done_states = CFG.GOAL_DONE_STATES.get(goal_name, CFG.GOAL_DONE_STATES["_default"])
@@ -1191,7 +1326,34 @@ def build_goal_bucket(goal_name, pbis_in_goal):
     else:
         label = f"Sprint{CFG.SPRINT_NUMBER}Goal-{goal_name}"
     svg   = donut_svg(done, total, hdr_color)
-    pbi_cards = "\n".join(build_pbi_card(p, i, goal_name) for i, p in enumerate(pbis_in_goal))
+
+    # Group the bucket's PBIs into per-team subsections (config team order first,
+    # any unknown/unassigned team last).
+    team_order = list(CFG.TEAMS.keys())
+    by_team = {}
+    for p in pbis_in_goal:
+        by_team.setdefault(p.get("name") or "—", []).append(p)
+    # config teams first (in order), then any other named teams (alpha), "—" last
+    ordered = [t for t in team_order if t in by_team]
+    ordered += sorted(t for t in by_team if t not in team_order and t != "—")
+    if "—" in by_team:
+        ordered.append("—")
+
+    def _team_subsection(team_label, members):
+        d = sum(1 for p in members if p["state"] in done_states)
+        head = (
+            f'<div style="display:flex;align-items:center;gap:8px;margin:12px 0 4px;'
+            f'padding:4px 2px;border-bottom:1px solid #eef2f7">'
+            f'<span style="font-size:12px;font-weight:700;color:#334155">👥 {team_label}</span>'
+            f'<span style="font-size:11px;color:#64748b">{d}/{len(members)} done</span>'
+            f'</div>'
+        )
+        cards = "\n".join(build_pbi_card(p, i, goal_name) for i, p in enumerate(members))
+        return head + cards
+
+    sections = [_team_subsection("Other / Unassigned" if t == "—" else t, by_team[t])
+                for t in ordered]
+    pbi_cards = "\n".join(sections)
     bucket_id  = f"g-{goal_name}"
 
     return (

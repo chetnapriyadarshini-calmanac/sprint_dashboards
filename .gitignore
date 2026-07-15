@@ -17,6 +17,12 @@ service_account.json
 gcp-*.json
 *serviceaccount*.json
 
+# Google OAuth client secret + cached user token (capacity Sheet, read-as-you)
+.gcp_oauth_client.json
+.gcp_oauth_token.json
+client_secret*.json
+token.json
+
 # ─────────────────────────────────────────────────────────────
 # Spreadsheets. The capacity workbook (Team_Capacity.xlsx) IS committed —
 # it holds no sensitive data. Everything else .xlsx (stray exports, Excel

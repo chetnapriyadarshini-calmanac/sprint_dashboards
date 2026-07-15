@@ -169,25 +169,29 @@ The machine must be awake at 10:00 and the repo-root credential files present. J
 
 `CAPACITY_XLSX` in `sprint_dashboard_config.py` decides where per-member capacity is read from. The workbook (whichever form) must have a **`Settings`** sheet (Working days in `B5`, Team days off in `B6`) and a **`Capacity`** sheet (`Team, Member, Activity, Capacity/day, Days off`).
 
-### In-repo workbook (current setup — no credentials needed)
+### Live Google Sheet, read as you via OAuth (current setup)
 
-`Team_Capacity.xlsx` lives **in this folder and is committed to git** (the capacity data isn't sensitive). Anyone who clones the repo can run the dashboard immediately — no Google login, service account, or Drive sync. `CAPACITY_XLSX = "Team_Capacity.xlsx"` is a **relative** path, so it resolves next to the generator on any machine.
+The dashboard reads the capacity **Google Sheet** using your own Google identity, so the company-domain restriction is satisfied without a service account. First run opens a browser to sign in and grant read-only access; the token is cached and refreshed automatically, so later runs are non-interactive.
 
-To maintain it:
+One-time setup:
 
-1. Open `daily-dashboard/Team_Capacity.xlsx` (in Excel, or upload to Google Sheets to edit, then download back as `.xlsx`).
-2. On the **Settings** sheet set `B5` (Working days) and `B6` (Team days off) for the sprint.
-3. On the **Capacity** sheet set each member's `Capacity/day` and `Days off`. Add/remove member rows as the team changes (keep names matching JIRA + the `TEAMS` config). The generated starter has every current member at 6 h/day, 0 days off — replace with real values.
-4. **Commit the change** so everyone gets it: `git add daily-dashboard/Team_Capacity.xlsx && git commit -m "Update capacity for Sprint N"`.
+1. In **Google Cloud Console**, create a project (or reuse one) and **enable the Google Drive API**.
+2. Create an **OAuth Client ID** of type **Desktop app** and download its JSON. If you can make the OAuth consent screen **Internal** (motivity Workspace), do so — the token then never expires. (An *External/Testing* app works too, but Google expires the refresh token every 7 days, so an unattended job would need re-consent weekly.)
+3. Save the downloaded file as **`.gcp_oauth_client.json` at the repo root** (git-ignored), or set `CAPACITY_OAUTH_CLIENT` in the config to its path.
+4. Install libs: `pip install -r requirements.txt` (adds `google-auth-oauthlib`).
+5. Set `CAPACITY_XLSX` in the config to the **Sheet URL** (e.g. `https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit`). The Sheet must have tabs named exactly **`Settings`** and **`Capacity`**.
+6. Run `python capacity_excel.py` once to complete the browser sign-in. A `.gcp_oauth_token.json` (git-ignored) is written and reused afterward.
 
-> The `.gitignore` ignores stray `*.xlsx` and Excel lock/temp files but has an explicit exception for `daily-dashboard/Team_Capacity.xlsx`, so only this workbook is tracked.
+For the **daily 10:00 job**: do step 6 once, signed in, on the machine that will run it. After that it runs headless — as long as the token doesn't expire (hence the *Internal* app recommendation). Delete `.gcp_oauth_token.json` to force a fresh sign-in. The token/key are personal secrets — never commit them (already git-ignored).
 
-### Alternatives (not currently used)
+### Alternatives
 
-- **Absolute local `.xlsx`** — set `CAPACITY_XLSX` to a real `.xlsx` in a Drive/OneDrive **synced folder** (e.g. `G:\My Drive\Team_Capacity.xlsx`) if you'd rather not commit it. It must be a real `.xlsx` (a native Google Sheet syncs only as a `.gsheet` pointer the script can't open).
-- **Google Sheet / URL** — a public link, or a domain-restricted Sheet read via a service account (`CAPACITY_SA_KEY` / `GOOGLE_APPLICATION_CREDENTIALS`, plus `pip install google-api-python-client google-auth`). See `capacity_excel.py` for the exact behavior.
+- **Committed `.xlsx` (no auth, most reliable for automation)** — a `Team_Capacity.xlsx` is committed in this folder as a fallback/reference. To use it instead, set `CAPACITY_XLSX = "Team_Capacity.xlsx"`; edit the file and commit when capacity changes. `.gitignore` tracks only this workbook (stray `*.xlsx` and Excel lock files stay out).
+- **Absolute local `.xlsx`** — a real `.xlsx` in a Drive/OneDrive synced folder (e.g. `G:\My Drive\Team_Capacity.xlsx`). Must be a real `.xlsx`, not a native Google Sheet (which syncs only as a `.gsheet` pointer).
+- **Service account** — set `CAPACITY_SA_KEY` and share the Sheet with the service account's `client_email`. Needs IT to allow a service account.
+- **Public URL** — a Sheet shared "Anyone with the link – Viewer"; no credentials.
 
-If a run can't read the workbook, the script prints a specific message telling you what to fix.
+The loader tries service account → OAuth → public in that order for a Sheet URL. If a run can't read the workbook, it prints a specific message telling you what to fix.
 
 ---
 

@@ -3,14 +3,14 @@ capacity_excel.py
 -----------------
 Read per-member sprint capacity from the maintained capacity workbook.
 
-The workbook is the source of truth for per-member capacity. `CAPACITY_XLSX`
-(in sprint_dashboard_config.py) may point at any of:
+`CAPACITY_XLSX` (in sprint_dashboard_config.py) may point at any of:
 
-  * a LOCAL .xlsx path (e.g. a Drive/OneDrive synced file), or
-  * a GOOGLE SHEET URL read via a service account (recommended when several
-    people / an unattended job must run this against a company-restricted
-    Sheet — see CAPACITY_SA_KEY), or
-  * a PUBLIC Google Sheet / direct .xlsx URL (unauthenticated download).
+  * a LOCAL .xlsx path (e.g. the committed Team_Capacity.xlsx, or a Drive/
+    OneDrive synced file), or
+  * a GOOGLE SHEET URL, read via one of (tried in this order):
+        1. a service-account key   (CAPACITY_SA_KEY / GOOGLE_APPLICATION_CREDENTIALS)
+        2. YOUR Google account via OAuth  (CAPACITY_OAUTH_CLIENT + cached token)
+        3. an unauthenticated public download (only if the link is public)
 
 Capacity model:
 
@@ -42,16 +42,17 @@ from openpyxl import load_workbook
 
 DEFAULT_FILE = "Team_Capacity.xlsx"
 
-# Default service-account key locations tried when CAPACITY_SA_KEY is not set.
+# Read-only Drive scope (enough to export a Sheet to .xlsx).
+_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+
+# Default credential file names, tried when the config values are None.
 # All are git-ignored (see .gitignore).
 _DEFAULT_SA_KEY_NAMES = (".gcp_sa.json", "service_account.json")
+_DEFAULT_OAUTH_CLIENT_NAMES = (".gcp_oauth_client.json", "client_secret.json")
+_DEFAULT_TOKEN_NAME = ".gcp_oauth_token.json"
 
 # .xlsx files are ZIP archives - they start with the "PK" local-file header.
-# Used to tell a real workbook from an HTML login/permission page that Google
-# returns when a link is NOT actually accessible.
 _XLSX_MAGIC = b"PK\x03\x04"
-
-# Drive export MIME type for an .xlsx workbook.
 _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -83,69 +84,158 @@ def _normalise_gsheet_url(url: str) -> str:
     return f"https://docs.google.com/spreadsheets/d/{sid}/export?format=xlsx"
 
 
-def _find_sa_key(explicit: str | None) -> str | None:
-    """Resolve the service-account key path: explicit arg -> the
-    GOOGLE_APPLICATION_CREDENTIALS env var -> a default file at the repo root or
-    next to this script. Returns None if none is found."""
-    candidates: list[str | Path] = []
-    if explicit:
-        candidates.append(explicit)
-    env = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    if env:
-        candidates.append(env)
-    here = Path(__file__).resolve().parent
-    for name in _DEFAULT_SA_KEY_NAMES:
-        candidates.append(here.parent / name)   # repo root
-        candidates.append(here / name)           # daily-dashboard/
+def _first_existing(candidates) -> str | None:
     for c in candidates:
         if c and Path(c).exists():
             return str(c)
     return None
 
 
+def _find_sa_key(explicit: str | None) -> str | None:
+    """service-account key: explicit -> GOOGLE_APPLICATION_CREDENTIALS -> default
+    file at the repo root or next to this script. None if not found."""
+    here = Path(__file__).resolve().parent
+    cands: list = [explicit, os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")]
+    for name in _DEFAULT_SA_KEY_NAMES:
+        cands += [here.parent / name, here / name]
+    return _first_existing(cands)
+
+
+def _find_oauth_client(explicit: str | None) -> str | None:
+    """OAuth client-secret file: explicit -> default name at the repo root or
+    next to this script. None if not found."""
+    here = Path(__file__).resolve().parent
+    cands: list = [explicit]
+    for name in _DEFAULT_OAUTH_CLIENT_NAMES:
+        cands += [here.parent / name, here / name]
+    return _first_existing(cands)
+
+
+def _default_token_path(client_path: str, explicit: str | None) -> str:
+    """Where to cache the OAuth token — explicit if given, else next to the
+    client-secret file."""
+    if explicit:
+        return explicit
+    return str(Path(client_path).resolve().parent / _DEFAULT_TOKEN_NAME)
+
+
+def _drive_export_xlsx(creds, file_id: str) -> io.BytesIO:
+    """Fetch a Drive file as .xlsx bytes with an authorized credential.
+
+    Handles BOTH kinds of file that a docs.google.com/spreadsheets URL can point
+    at: a NATIVE Google Sheet (exported to .xlsx) and an UPLOADED .xlsx file
+    (downloaded as-is — the Drive export API rejects those with
+    'Export only supports Docs Editors files')."""
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaIoBaseDownload
+
+    svc = build("drive", "v3", credentials=creds, cache_discovery=False)
+    meta = svc.files().get(fileId=file_id, fields="mimeType,name",
+                           supportsAllDrives=True).execute()
+    mime = meta.get("mimeType", "")
+
+    if mime == "application/vnd.google-apps.spreadsheet":
+        # Native Google Sheet -> export to .xlsx
+        data = svc.files().export(fileId=file_id, mimeType=_XLSX_MIME).execute()
+        buf = io.BytesIO(data if isinstance(data, (bytes, bytearray))
+                         else str(data).encode("utf-8", "ignore"))
+    else:
+        # Uploaded binary file (.xlsx etc.) -> download the bytes directly
+        buf = io.BytesIO()
+        dl = MediaIoBaseDownload(
+            buf, svc.files().get_media(fileId=file_id, supportsAllDrives=True))
+        done = False
+        while not done:
+            _, done = dl.next_chunk()
+
+    raw = buf.getvalue()
+    if not raw or not raw.startswith(_XLSX_MAGIC):
+        raise RuntimeError(
+            f"Fetched Drive file (mimeType={mime!r}) is not a valid .xlsx "
+            "workbook. Point CAPACITY_XLSX at a Google Sheet or an .xlsx file you "
+            "can open, with 'Settings' and 'Capacity' tabs."
+        )
+    buf.seek(0)
+    return buf
+
+
 def _export_gsheet_via_service_account(sheet_id: str, key_path: str) -> io.BytesIO:
-    """Authenticated export of a Google Sheet to .xlsx bytes using a service
-    account. The Sheet must be shared (Viewer) with the service account's
-    client_email, and the Drive API enabled on its project."""
+    """Export a Sheet using a service account (Sheet shared with its client_email)."""
     try:
         from google.oauth2 import service_account
-        from googleapiclient.discovery import build
     except ImportError as e:
         raise RuntimeError(
-            "Google API libraries are required to read a Google Sheet via a "
-            "service account. Install them with:\n"
+            "Missing Google libraries. Run:\n"
             "  pip install google-api-python-client google-auth\n"
             f"(import error: {e})"
         )
-    scopes = ["https://www.googleapis.com/auth/drive.readonly"]
     try:
-        creds = service_account.Credentials.from_service_account_file(key_path, scopes=scopes)
-        svc = build("drive", "v3", credentials=creds, cache_discovery=False)
-        data = svc.files().export(fileId=sheet_id, mimeType=_XLSX_MIME).execute()
+        creds = service_account.Credentials.from_service_account_file(key_path, scopes=_SCOPES)
+        return _drive_export_xlsx(creds, sheet_id)
     except Exception as e:
         raise RuntimeError(
             f"Could not export the Google Sheet (id={sheet_id}) with the service "
             f"account key '{key_path}'.\n"
-            "Checklist: (1) the Sheet is shared with the service account's "
-            "client_email as Viewer; (2) the Google Drive API is enabled on the "
-            "service account's project; (3) the key file is valid.\n"
+            "Check: (1) Sheet shared with the service account client_email (Viewer); "
+            "(2) Drive API enabled on its project; (3) key file valid.\n"
             f"Underlying error: {e}"
         )
-    if isinstance(data, str):
-        data = data.encode("utf-8", "ignore")
-    if not data or not data.startswith(_XLSX_MAGIC):
+
+
+def _export_gsheet_via_oauth(sheet_id: str, client_path: str, token_path: str) -> io.BytesIO:
+    """Export a Sheet as the SIGNED-IN USER via OAuth.
+
+    First run opens a browser for consent (sign in with the Google account that
+    can see the Sheet); the resulting token is cached at `token_path` and
+    refreshed automatically on later runs, so subsequent runs are headless.
+    """
+    try:
+        from google.oauth2.credentials import Credentials
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        from google.auth.transport.requests import Request
+    except ImportError as e:
         raise RuntimeError(
-            "The Google Sheet export did not return a valid .xlsx. Confirm the "
-            "file ID points at a Google Sheet (not a folder or uploaded file)."
+            "Missing Google OAuth libraries. Run:\n"
+            "  pip install google-api-python-client google-auth google-auth-oauthlib\n"
+            f"(import error: {e})"
         )
-    return io.BytesIO(data)
+
+    creds = None
+    if Path(token_path).exists():
+        try:
+            creds = Credentials.from_authorized_user_file(token_path, _SCOPES)
+        except Exception:
+            creds = None
+
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(Request())
+            except Exception:
+                creds = None
+        if not creds or not creds.valid:
+            # Interactive consent (browser). Needed once, then the cached token
+            # is reused/refreshed.
+            flow = InstalledAppFlow.from_client_secrets_file(client_path, _SCOPES)
+            creds = flow.run_local_server(port=0)
+        try:
+            Path(token_path).write_text(creds.to_json(), encoding="utf-8")
+        except Exception:
+            pass  # non-fatal: we simply re-consent next time
+
+    try:
+        return _drive_export_xlsx(creds, sheet_id)
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not export the Google Sheet (id={sheet_id}) as the signed-in "
+            f"user.\nCheck that your account can open the Sheet and the Drive API "
+            f"is enabled on the OAuth client's project.\nUnderlying error: {e}"
+        )
 
 
 def _fetch_workbook_bytes(url: str) -> io.BytesIO:
-    """UNAUTHENTICATED download of a workbook from a URL into memory. Only works
-    when the link is readable without signing in. Raises a clear error if the
-    link returns a login/permission page instead of an .xlsx file."""
-    import requests  # local import - only needed for the URL path
+    """UNAUTHENTICATED download from a URL. Only works for public links."""
+    import requests
 
     fetch_url = _normalise_gsheet_url(url)
     try:
@@ -159,19 +249,21 @@ def _fetch_workbook_bytes(url: str) -> io.BytesIO:
         raise RuntimeError(
             "The capacity link did not return an .xlsx file - it looks like an "
             "HTML page (usually a sign-in or 'no access' page).\n"
-            "A company-restricted Sheet cannot be read this way. Either set a "
-            "service-account key (CAPACITY_SA_KEY / GOOGLE_APPLICATION_CREDENTIALS) "
-            "and share the Sheet with its client_email, or use a local synced "
-            ".xlsx path. See the README.\n"
+            "For a company-restricted Sheet, set up OAuth (CAPACITY_OAUTH_CLIENT) "
+            "or a service account (CAPACITY_SA_KEY), or use a local .xlsx path. "
+            "See the README.\n"
             f"URL tried: {fetch_url}"
         )
     return io.BytesIO(data)
 
 
-def _resolve_source(xlsx_path: str | Path | None, sa_key: str | None = None):
-    """Return something load_workbook() can open: a local Path or an in-memory
-    BytesIO downloaded from a URL (authenticated when a service-account key is
-    available for a Google Sheet, otherwise an unauthenticated fetch)."""
+def _resolve_source(xlsx_path: str | Path | None,
+                    sa_key: str | None = None,
+                    oauth_client: str | None = None,
+                    oauth_token: str | None = None):
+    """Return something load_workbook() can open: a local Path, or in-memory
+    .xlsx bytes downloaded from a Google Sheet (service account -> OAuth ->
+    public, whichever is configured/available)."""
     if xlsx_path is None:
         return Path(__file__).resolve().parent / DEFAULT_FILE
     src = str(xlsx_path)
@@ -181,8 +273,11 @@ def _resolve_source(xlsx_path: str | Path | None, sa_key: str | None = None):
             key = _find_sa_key(sa_key)
             if key:
                 return _export_gsheet_via_service_account(sheet_id, key)
-            # No key configured -> fall back to the public-link path (which will
-            # raise a helpful error if the Sheet is not actually public).
+            client = _find_oauth_client(oauth_client)
+            if client:
+                token = _default_token_path(client, oauth_token)
+                return _export_gsheet_via_oauth(sheet_id, client, token)
+            # nothing configured -> try the public path (raises if not public)
         return _fetch_workbook_bytes(src)
     path = Path(xlsx_path)
     if not path.exists():
@@ -196,15 +291,17 @@ def _resolve_source(xlsx_path: str | Path | None, sa_key: str | None = None):
 
 def load_dataframe(xlsx_path: str | Path | None = None,
                    ctx: dict[str, Any] | None = None,
-                   sa_key: str | None = None) -> pd.DataFrame:
+                   sa_key: str | None = None,
+                   oauth_client: str | None = None,
+                   oauth_token: str | None = None) -> pd.DataFrame:
     """Return Member | Activity | Sprint cap from the capacity workbook.
 
-    `xlsx_path` may be a local file path OR an http(s) URL (Google Sheet link or
-    a direct .xlsx download link). `sa_key` is an optional service-account key
-    path used to read a Google Sheet via the Drive API. `ctx` is accepted and
-    ignored so the signature matches the generator's loader swap.
+    `xlsx_path` may be a local path or an http(s) URL. `sa_key` / `oauth_client`
+    / `oauth_token` are optional credential paths for reading a Google Sheet.
+    `ctx` is accepted and ignored so the signature matches the loader swap.
     """
-    source = _resolve_source(xlsx_path, sa_key=sa_key)
+    source = _resolve_source(xlsx_path, sa_key=sa_key,
+                             oauth_client=oauth_client, oauth_token=oauth_token)
     src_name = getattr(source, "name", None) or "capacity workbook"
 
     wb = load_workbook(source, data_only=False)
