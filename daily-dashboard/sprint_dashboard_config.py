@@ -160,10 +160,10 @@ TEAMS = {
         "Rahul Patil",
         "Suyog Joshi",
     ],
-    "QA Automation": [
-        "Sudarshan Shinde",
-        "Vrushali Sagare",
-    ],
+    # NOTE: "QA Automation" works in Kanban (no Sprint field), so its work can't
+    # be pulled by the sprint-scoped query and would only ever show zeros here.
+    # It's intentionally excluded from this sprint dashboard. To bring it back,
+    # re-add the team and fetch its members' issues by assignee (no sprint).
 }
 
 # -- JIRA status ladder (statuses at each pipeline rank) ----------------------
