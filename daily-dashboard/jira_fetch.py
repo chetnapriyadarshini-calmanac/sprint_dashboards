@@ -69,9 +69,20 @@ _DATE_FIELDS_RESOLVED = False
 # Field names that indicate a team-assignment field.
 _TEAM_FIELD_NAMES = ("team", "team name", "squad", "delivery team")
 
+# Story-level detail fields surfaced in the Story View tab (resolved by name).
+_STORY_DETAIL_FIELD_NAMES = [
+    "Dev Original Estimate",
+    "QA Original Estimate",
+    "Dev Approximate Efforts (Calculated)",
+    "Dev Remaining Efforts (Calculated)",
+    "QA Approximate Efforts (Calculated)",
+    "QA Remaining Efforts (Calculated)",
+]
+_F_STORY_DETAILS: list = []   # resolved [(field_id, label), ...] in display order
+
 _DASHBOARD_COLS = ["ID", "Title", "Work Item Type", "State", "Assigned To",
                    "Iteration Path", "Tags", "Original Estimate", "Completed Work",
-                   "Sizing", "Release", "Team"]
+                   "Sizing", "Release", "Team", "StoryFields"]
 
 _FIELDS = ["summary", "issuetype", "status", "assignee", "labels", "parent",
            "fixVersions", "timeoriginalestimate", "timespent",
@@ -114,7 +125,21 @@ def _resolve_date_fields(ctx) -> None:
                 if fid and fid not in team_ids:
                     team_ids.append(fid)
         _F_TEAMS = team_ids
-        for fid in [_F_TECH_DATE, _F_DEV_DATE, _F_QA_DATE, *_F_TEAMS]:
+        # Story-level detail fields (Dev/QA estimates & efforts) by name.
+        global _F_STORY_DETAILS
+        _sd = []
+        for want in _STORY_DETAIL_FIELD_NAMES:
+            fid = by_name.get(want.strip().lower())
+            if fid:
+                _sd.append((fid, want))
+        _F_STORY_DETAILS = _sd
+        _missing_sd = [w for w in _STORY_DETAIL_FIELD_NAMES
+                       if w.strip().lower() not in by_name]
+        if _missing_sd:
+            print("   ⚠ Story-detail fields NOT FOUND (name mismatch):",
+                  ", ".join(_missing_sd))
+        for fid in [_F_TECH_DATE, _F_DEV_DATE, _F_QA_DATE, *_F_TEAMS,
+                    *[i for i, _l in _F_STORY_DETAILS]]:
             if fid and fid not in _FIELDS:
                 _FIELDS.append(fid)
         print(f"   📅 Completion-date fields — Tech Analysis: "
@@ -283,6 +308,23 @@ def _team(fields: dict[str, Any]) -> str:
     return ""
 
 
+def _story_details(fields: dict[str, Any]) -> dict[str, str]:
+    """Ordered {label: value} for the Story-detail fields (Dev/QA estimates &
+    efforts). Values are formatted to strings; unset -> ''."""
+    out: dict[str, str] = {}
+    for fid, label in _F_STORY_DETAILS:
+        v = fields.get(fid)
+        if isinstance(v, dict):
+            v = v.get("value") or v.get("name")
+        if v is None or v == "":
+            out[label] = ""
+        elif isinstance(v, float) and v.is_integer():
+            out[label] = str(int(v))
+        else:
+            out[label] = str(v)
+    return out
+
+
 def _sprint_name(fields: dict[str, Any]) -> str:
     """Sprint field is a list of sprint objects; prefer the active one, else last."""
     sprints = fields.get(F_SPRINT) or []
@@ -378,6 +420,7 @@ def _pbi_row(issue: dict[str, Any], sprint_number: int,
         "Sizing": _sizing(f),
         "Release": _fix_version(f),
         "Team": _team(f),
+        "StoryFields": _story_details(f),
     }
 
 
@@ -402,6 +445,7 @@ def _epic_pbi_row(epic_key: str, epic_title: str | None,
         "Sizing": _sizing(f),
         "Release": _fix_version(f),
         "Team": _team(f),
+        "StoryFields": _story_details(f),
     }
 
 
@@ -431,6 +475,7 @@ def _story_pbi_row(issue: dict[str, Any], epic_name: str | None,
         "Sizing": _sizing(f),
         "Release": _fix_version(f),
         "Team": _team(f),
+        "StoryFields": _story_details(f),
     }
 
 
@@ -468,6 +513,7 @@ def _bug_row(issue: dict[str, Any]) -> dict[str, Any]:
         "Sizing": _sizing(f),
         "Release": _fix_version(f),
         "Team": _team(f),
+        "StoryFields": _story_details(f),
     }
 
 

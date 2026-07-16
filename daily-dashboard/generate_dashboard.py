@@ -551,6 +551,7 @@ def classify_pbis(df_pbis, df_tasks, df_raw_all):
             "size":        size,
             "release":     release,
             "team":        team,
+            "story_fields": (row.get("StoryFields") if isinstance(row.get("StoryFields"), dict) else {}),
             "goal_dates":  goal_dates,
             "sort_date":   sort_date,
             "dev_date":    dev_dt,
@@ -1258,7 +1259,7 @@ def _short_team(name: str) -> str:
     return s.strip()
 
 
-def build_pbi_card(pbi, idx, goal, scope="g"):
+def build_pbi_card(pbi, idx, goal, scope="g", body="tasks"):
     pid    = pbi["id"]
     title  = pbi["title"]
     state  = pbi["state"]
@@ -1284,6 +1285,11 @@ def build_pbi_card(pbi, idx, goal, scope="g"):
         date_badge += (f'<span title="Goal target date" style="background:#f0fdf4;color:#15803d;'
                        f'padding:1px 6px;border-radius:8px;font-size:10px;font-weight:600;margin-left:2px">'
                        f'📅 {_lbl}: {_ds}</span>')
+    team_badge = ""
+    if pbi.get("team") and pbi.get("team") != "—":
+        team_badge = (f'<span title="Team" style="background:#faf5ff;color:#7c3aed;'
+                      f'padding:1px 6px;border-radius:8px;font-size:10px;font-weight:600">'
+                      f'👥 {pbi["team"]}</span>')
 
     prg_badge = pbi_progress_badge(state, done_st, CFG.INPROGRESS_STATES)
     task_sum  = (f'{pbi["task_done"]}/{pbi["task_total"]} tasks&nbsp;|&nbsp;'
@@ -1305,8 +1311,27 @@ def build_pbi_card(pbi, idx, goal, scope="g"):
 <tbody>{task_rows}</tbody>
 </table></div>"""
 
+    # Story View body: the story's own detail fields (Dev/QA estimates & efforts),
+    # NOT a sub-task breakdown.
+    if body == "fields":
+        sf = pbi.get("story_fields") or {}
+        if sf:
+            frows = "".join(
+                f'<tr><td style="padding:5px 12px;color:#64748b;font-size:12px;'
+                f'border-bottom:1px solid #f1f5f9;white-space:nowrap">{k}</td>'
+                f'<td style="padding:5px 12px;font-size:12px;font-weight:600;'
+                f'border-bottom:1px solid #f1f5f9">{v if v not in (None, "") else "—"}</td></tr>'
+                for k, v in sf.items())
+            expand_body = (f'<table style="border-collapse:collapse;min-width:340px">'
+                           f'<tbody>{frows}</tbody></table>')
+        else:
+            expand_body = ('<div style="font-size:12px;color:#94a3b8">'
+                           'No story detail fields set.</div>')
+    else:
+        expand_body = task_table
+
     uid = f"pb-{scope}-{pid}"
-    return f"""<div onclick="var e=document.getElementById('{uid}'),i=document.getElementById('{uid}-i');if(e.style.display==='none'){{e.style.display='block';i.textContent='−'}}else{{e.style.display='none';i.textContent='+'}}" style="display:flex;align-items:center;gap:8px;padding: 10px 14px; cursor: pointer; background: rgb(255, 255, 255); user-select: none;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='#fff'"><span id="{uid}-i" style="color:#94a3b8;font-size:12px;flex-shrink:0;width:12px;text-align:center">+</span><div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:2px"><span style="font-size:11px;color:#94a3b8">#{pid}</span>{hotfix_badge}{state_badge(state)}{size_badge}{rel_badge}{date_badge} </div><div style="font-size:13px;font-weight:500;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{title}</div><div style="font-size:11px;color:#64748b;margin-top:1px">{pbi["assignee"]}</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">{prg_badge}<span style="font-size:10px;color:#94a3b8">{task_sum}</span></div></div><div id="{uid}" style="display:none;padding:12px 14px;border-top:1px solid #f1f5f9;background:#fafafa">{task_table}</div>"""
+    return f"""<div onclick="var e=document.getElementById('{uid}'),i=document.getElementById('{uid}-i');if(e.style.display==='none'){{e.style.display='block';i.textContent='−'}}else{{e.style.display='none';i.textContent='+'}}" style="display:flex;align-items:center;gap:8px;padding: 10px 14px; cursor: pointer; background: rgb(255, 255, 255); user-select: none;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='#fff'"><span id="{uid}-i" style="color:#94a3b8;font-size:12px;flex-shrink:0;width:12px;text-align:center">+</span><div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:2px"><span style="font-size:11px;color:#94a3b8">#{pid}</span>{hotfix_badge}{state_badge(state)}{team_badge}{size_badge}{rel_badge}{date_badge} </div><div style="font-size:13px;font-weight:500;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{title}</div><div style="font-size:11px;color:#64748b;margin-top:1px">{pbi["assignee"]}</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">{prg_badge}<span style="font-size:10px;color:#94a3b8">{task_sum}</span></div></div><div id="{uid}" style="display:none;padding:12px 14px;border-top:1px solid #f1f5f9;background:#fafafa">{expand_body}</div>"""
 
 def build_goal_bucket(goal_name, pbis_in_goal):
     done_states = CFG.GOAL_DONE_STATES.get(goal_name, CFG.GOAL_DONE_STATES["_default"])
@@ -2084,6 +2109,50 @@ def build_team_pbi_status(pbis):
     )
 
 
+def build_story_view_tab(pbis):
+    """Story View tab: every story in the sprint as an expandable card. Click a
+    story to reveal its attached info (sub-tasks with est/spent, plus the state,
+    team, sizing, release and goal-date badges on the card)."""
+    stories = [p for p in pbis if p.get("type") != "Bug"]
+
+    def _idnum(p):
+        m = re.search(r"(\d+)", str(p.get("id", "")))
+        return int(m.group(1)) if m else 0
+
+    # Group by team (config order first, other teams alpha, unassigned last),
+    # and within a team by story id.
+    team_order = list(CFG.TEAMS.keys())
+    by_team = {}
+    for p in stories:
+        by_team.setdefault(p.get("team") or "—", []).append(p)
+    ordered = [t for t in team_order if t in by_team]
+    ordered += sorted(t for t in by_team if t not in team_order and t != "—")
+    if "—" in by_team:
+        ordered.append("—")
+
+    sections = []
+    for t in ordered:
+        members = sorted(by_team[t], key=_idnum)
+        label = "Other / Unassigned" if t == "—" else t
+        head = (f'<div style="display:flex;align-items:center;gap:8px;margin:14px 0 4px;'
+                f'padding:6px 2px;border-bottom:1px solid #eef2f7">'
+                f'<span style="font-size:13px;font-weight:700;color:#334155">👥 {label}</span>'
+                f'<span style="font-size:11px;color:#64748b">{len(members)} stories</span></div>')
+        cards = "\n".join(build_pbi_card(p, i, p.get("goal") or "story", scope="sv", body="fields")
+                          for i, p in enumerate(members))
+        sections.append(head + cards)
+
+    body = (
+        '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px 18px">'
+        '<div style="font-size:15px;font-weight:700;color:#1e293b;margin-bottom:2px">📖 Story View</div>'
+        f'<div style="font-size:12px;color:#64748b;margin-bottom:6px">{len(stories)} stories in the '
+        f'sprint — click any story to expand its sub-tasks and details.</div>'
+        + "\n".join(sections) +
+        '</div>'
+    )
+    return f'<div id="t-story" class="tc">{body}</div>'
+
+
 def build_html(pbis, s79_tasks, team_capacity_data, extra_tabs=None,
                df_cap=None, stale_df=None):
     # Group PBIs by goal
@@ -2209,6 +2278,7 @@ def build_html(pbis, s79_tasks, team_capacity_data, extra_tabs=None,
   <button class="nb" onclick="showTab('daily',this)">📅 Daily Tracking</button>
   <button class="nb" onclick="showTab('dsm',this)">🎯 DSM Insights</button>
   <button class="nb" onclick="showTab('risk',this)">⚡ Risk &amp; Health</button>
+  <button class="nb" onclick="showTab('story',this)">📖 Story View</button>
 </div>
 
 <!-- ── Tab Content Wrapper ── -->
@@ -2329,7 +2399,9 @@ if __name__ == "__main__":
         cap_lookup, CFG.SPRINT_DAY, CFG.SPRINT_TOTAL_DAYS,
         CFG.SPRINT_START_DATE
     )
-    extra_tabs = daily_tab + "\n" + dsm_tab + "\n" + risk_tab
+    print("📖 Building Story View tab ...")
+    story_tab = build_story_view_tab(pbis)
+    extra_tabs = daily_tab + "\n" + dsm_tab + "\n" + risk_tab + "\n" + story_tab
 
     # ── Sprint <-> Release scope mismatches (for the Discrepancies tab) ────────
     # JIRA equivalent of the old TFS stale-ticket probe: flag issues where the
