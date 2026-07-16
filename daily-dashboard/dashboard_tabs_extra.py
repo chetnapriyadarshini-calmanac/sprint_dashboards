@@ -12,6 +12,30 @@ from pathlib import Path
 import pandas as pd
 
 
+def _name_tokens(s) -> frozenset:
+    """Token set for tolerant name matching ('suyog.joshi' == 'Suyog Joshi')."""
+    s = re.sub(r"[._\-]+", " ", str(s or "").lower())
+    return frozenset(t for t in s.split() if t)
+
+
+def _roster_canonicaliser(teams: dict):
+    """Return (roster_names_set, canon_fn) where canon_fn maps an assignee to its
+    roster display name (tolerant of dotted usernames), or '' if not on a team."""
+    roster = [(_name_tokens(m), m) for ms in teams.values() for m in ms]
+    names = {m for ms in teams.values() for m in ms}
+
+    def _canon(n):
+        tk = _name_tokens(n)
+        if not tk:
+            return ""
+        for rt, disp in roster:
+            if rt and (rt == tk or rt <= tk or tk <= rt):
+                return disp
+        return ""   # not on any roster team
+
+    return names, _canon
+
+
 def _tid(v):
     """Work-item id: int for TFS numeric IDs, the string key for JIRA
     ("MPM-105"), and "" for missing/NaN. Replaces the old int(...) casts
@@ -458,18 +482,36 @@ def build_dsm_tab(s79_tasks, history: dict, pbis: list, metrics: dict,
     else:
         since_label = "sprint start"
 
+    # Phrase for the delta window (since the previous daily snapshot), so blocker
+    # reasons read "…logged since yesterday" / "…since Tue 15 Jul" rather than the
+    # misleading "today".
+    window = ("since yesterday" if since_label == "yesterday"
+              else "since sprint start" if since_label == "sprint start"
+              else since_label)
+
     # Talking points
     points = []
     tasks_done_today = 0
     no_progress_members = []
     stuck_tasks = []
 
+    from sprint_dashboard_config import TEAMS
+    _roster_names, _canon = _roster_canonicaliser(TEAMS)
+    # Canonical assignee column so all per-member/team lookups below match the
+    # roster spelling regardless of the raw JIRA username format.
+    s79_tasks = s79_tasks.copy()
+    s79_tasks["_canon"] = s79_tasks["Assigned To"].map(lambda a: _canon(str(a)))
+
     member_activity = {}
     for _, t in s79_tasks.iterrows():
         tid     = str(_tid(t.get("ID", 0)))
         state   = str(t.get("State", ""))
         spent   = float(t.get("Completed Work", 0) or 0)
-        assignee = str(t.get("Assigned To", ""))
+        # Attribute to the roster member (tolerant of dotted usernames); skip
+        # anyone not on a team roster so non-members aren't reported.
+        assignee = _canon(str(t.get("Assigned To", "")))
+        if not assignee:
+            continue
         title   = str(t.get("Title", ""))[:55]
 
         ps = prev_task.get(tid, {})
@@ -494,10 +536,10 @@ def build_dsm_tab(s79_tasks, history: dict, pbis: list, metrics: dict,
             if delta == 0:
                 stuck_tasks.append((tid, title, assignee))
 
-    # Members with zero activity
+    # Members with zero activity — roster members only (canonicalised).
     for _, t in s79_tasks.iterrows():
-        name = str(t.get("Assigned To", ""))
-        if name not in member_activity:
+        name = _canon(str(t.get("Assigned To", "")))
+        if name and name not in member_activity:
             member_activity[name] = {"delta": 0, "done_today": 0, "started_today": 0}
 
     for name, act in member_activity.items():
@@ -539,7 +581,7 @@ def build_dsm_tab(s79_tasks, history: dict, pbis: list, metrics: dict,
             stuck_by_person.setdefault(assignee, []).append((tid, title))
 
         for person, p_tasks in stuck_by_person.items():
-            m_tasks  = s79_tasks[s79_tasks["Assigned To"] == person]
+            m_tasks  = s79_tasks[s79_tasks["_canon"] == person]
             m_spent  = float(m_tasks["Completed Work"].sum())
             m_est    = float(m_tasks["Original Estimate"].sum())
             m_done   = int((m_tasks["State"] == "Done").sum())
@@ -554,7 +596,7 @@ def build_dsm_tab(s79_tasks, history: dict, pbis: list, metrics: dict,
 
             if person_total_delta > 0:
                 # Person is active today — specific tasks just had no new hours.
-                reason       = (f"No progress on these tasks today "
+                reason       = (f"No progress on these tasks {window} "
                                 f"(logged {person_total_delta}h on other tasks) — "
                                 f"{m_done}/{m_total} tasks done, {m_spent:.0f}h/{m_est:.0f}h spent")
                 badge_label  = "STALLED"
@@ -566,7 +608,7 @@ def build_dsm_tab(s79_tasks, history: dict, pbis: list, metrics: dict,
                 reason_color = "#d97706"
             else:
                 # Person has truly logged nothing today.
-                reason       = (f"In Progress with 0 hours logged today — "
+                reason       = (f"In Progress with 0 hours logged {window} — "
                                 f"{m_done}/{m_total} tasks done, {m_spent:.0f}h/{m_est:.0f}h spent")
                 badge_label  = "STUCK"
                 badge_bg     = "#fee2e2"
@@ -607,7 +649,7 @@ def build_dsm_tab(s79_tasks, history: dict, pbis: list, metrics: dict,
     followup_html = ""
     if no_progress_members and prev:
         for name in sorted(set(no_progress_members)):
-            m_tasks  = s79_tasks[s79_tasks["Assigned To"] == name]
+            m_tasks  = s79_tasks[s79_tasks["_canon"] == name]
             m_spent  = float(m_tasks["Completed Work"].sum())
             m_cap    = cap_lookup.get(name, 0)
             active   = m_tasks[m_tasks["State"].isin(["In Progress", "To Do"])]
@@ -650,7 +692,7 @@ def build_dsm_tab(s79_tasks, history: dict, pbis: list, metrics: dict,
     from sprint_dashboard_config import TEAMS
     team_cards = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-bottom:14px">'
     for team, members in TEAMS.items():
-        team_tasks  = s79_tasks[s79_tasks["Assigned To"].isin(members)]
+        team_tasks  = s79_tasks[s79_tasks["_canon"].isin(members)]
         team_done   = int((team_tasks["State"] == "Done").sum())
         team_ip     = int((team_tasks["State"] == "In Progress").sum())
         team_todo   = int(team_tasks.shape[0]) - team_done - team_ip
@@ -688,6 +730,12 @@ def build_risk_health_tab(s79_tasks, history: dict, pbis: list, metrics: dict,
 
     from sprint_dashboard_config import TEAMS, RISK, GOAL_DONE_STATES, INPROGRESS_STATES
 
+    # Canonical assignee column so team rollups match roster names regardless of
+    # the raw JIRA username format ('suyog.joshi' == 'Suyog Joshi').
+    _roster_names, _canon = _roster_canonicaliser(TEAMS)
+    s79_tasks = s79_tasks.copy()
+    s79_tasks["_canon"] = s79_tasks["Assigned To"].map(lambda a: _canon(str(a)))
+
     remaining_days = max(sprint_total_days - sprint_day, 1)
     remaining_tasks_count = metrics["total_tasks"] - metrics["tasks_done"]
     capacity_used_pct = round(metrics["spent_h"] / metrics["est_h"] * 100) if metrics["est_h"] else 0
@@ -704,7 +752,7 @@ def build_risk_health_tab(s79_tasks, history: dict, pbis: list, metrics: dict,
     time_elapsed_pct = round(sprint_day / sprint_total_days * 100) if sprint_total_days else 0
     pod_risks = []
     for team, members in TEAMS.items():
-        team_tasks = s79_tasks[s79_tasks["Assigned To"].isin(members)]
+        team_tasks = s79_tasks[s79_tasks["_canon"].isin(members)]
         team_done  = int((team_tasks["State"] == "Done").sum())
         team_total = int(team_tasks.shape[0])
         team_spent = float(team_tasks["Completed Work"].sum())
@@ -741,12 +789,12 @@ def build_risk_health_tab(s79_tasks, history: dict, pbis: list, metrics: dict,
         # Per-member: estimate over 120% of capacity (planning view).
         overloaded_members = [m for m in members
                                if cap_lookup.get(m, 0) > 0 and
-                               s79_tasks[s79_tasks["Assigned To"]==m]["Original Estimate"].sum() >
+                               s79_tasks[s79_tasks["_canon"]==m]["Original Estimate"].sum() >
                                cap_lookup.get(m, 0) * RISK["overloaded_pct"] / 100]
         # Per-member: spent already exceeds full sprint capacity (burning view).
         burning_members = [m for m in members
                            if cap_lookup.get(m, 0) > 0 and
-                           float(s79_tasks[s79_tasks["Assigned To"]==m]
+                           float(s79_tasks[s79_tasks["_canon"]==m]
                                  ["Completed Work"].sum()) > cap_lookup.get(m, 0)]
 
         risks = []
@@ -832,7 +880,7 @@ def build_risk_health_tab(s79_tasks, history: dict, pbis: list, metrics: dict,
         est   = float(t.get("Original Estimate", 0) or 0)
         name  = str(t.get("Assigned To", ""))
         cap   = cap_lookup.get(name, 0)
-        used  = float(s79_tasks[s79_tasks["Assigned To"]==name]["Completed Work"].sum())
+        used  = float(s79_tasks[s79_tasks["_canon"]==name]["Completed Work"].sum())
         remaining_cap = cap - used
         title = str(t.get("Title", ""))[:55]
         tid   = _tid(t.get("ID", 0))
@@ -918,7 +966,7 @@ def build_risk_health_tab(s79_tasks, history: dict, pbis: list, metrics: dict,
         _elapsed_pct = (sprint_day / sprint_total_days * 100) if sprint_total_days else 0
         team_completion_pct = {}
         for _tname, _tmembers in TEAMS.items():
-            _ttasks = s79_tasks[s79_tasks["Assigned To"].isin(_tmembers)]
+            _ttasks = s79_tasks[s79_tasks["_canon"].isin(_tmembers)]
             _ttotal = int(_ttasks.shape[0])
             _tdone  = int((_ttasks["State"] == "Done").sum()) if _ttotal else 0
             team_completion_pct[_tname] = (_tdone / _ttotal * 100) if _ttotal else 100.0
@@ -1300,7 +1348,7 @@ def build_risk_health_tab(s79_tasks, history: dict, pbis: list, metrics: dict,
     overloaded = []
     for m, cap in cap_lookup.items():
         if cap and cap > 0:
-            committed = float(s79_tasks[s79_tasks["Assigned To"] == m]["Original Estimate"].sum())
+            committed = float(s79_tasks[s79_tasks["_canon"] == m]["Original Estimate"].sum())
             if committed > cap * RISK["overloaded_pct"] / 100:
                 overloaded.append(m)
     if overloaded:

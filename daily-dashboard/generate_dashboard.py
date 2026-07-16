@@ -570,15 +570,16 @@ def classify_pbis(df_pbis, df_tasks, df_raw_all):
 def compute_capacity(df_tasks, df_cap):
     s79 = _in_sprint_tasks(df_tasks)
 
-    # Per-person Sprint 79 metrics
+    # Per-person metrics, keyed by CANONICAL roster name so dotted JIRA
+    # usernames (e.g. 'suyog.joshi') attribute to the roster member ('Suyog
+    # Joshi') and their logged effort is counted.
     pstats = {}
-    for member_col in ["Assigned To"]:
-        grp = s79.groupby(member_col)
-        for name, g in grp:
-            done  = int((g["State"] == "Done").sum())
-            est   = float(g["Original Estimate"].sum())
-            spent = float(g["Completed Work"].sum())
-            pstats[str(name)] = {"done": done, "estimated": est, "spent": spent}
+    for name, g in s79.groupby("Assigned To"):
+        cname = _canonical_person(str(name))
+        d = pstats.setdefault(cname, {"done": 0, "estimated": 0.0, "spent": 0.0})
+        d["done"]      += int((g["State"] == "Done").sum())
+        d["estimated"] += float(g["Original Estimate"].sum())
+        d["spent"]     += float(g["Completed Work"].sum())
 
     # Base capacity from capacity sheet — try to find by name
     cap_lookup = {}
@@ -606,7 +607,8 @@ def compute_capacity(df_tasks, df_cap):
             n = str(r[name_col]).strip()
             if not n or n.lower() in ("nan", ""):
                 continue
-            raw_totals[n] = raw_totals.get(n, 0.0) + _parse_hours(r[cap_col])
+            cn = _canonical_person(n)   # match roster spelling
+            raw_totals[cn] = raw_totals.get(cn, 0.0) + _parse_hours(r[cap_col])
         cap_lookup = raw_totals
 
     # Normalise via CAPACITY_NAME_MAP
@@ -626,7 +628,8 @@ def compute_capacity(df_tasks, df_cap):
         for m in members:
             stats = pstats.get(m, {"done": 0, "estimated": 0.0, "spent": 0.0})
             base  = cap_lookup.get(m, cap_lookup.get(CFG.CAPACITY_NAME_MAP.get(m, "__"), 0.0))
-            task_total = int(s79[s79["Assigned To"] == m].shape[0])
+            task_total = int(sum(1 for a in s79["Assigned To"]
+                                 if _canonical_person(str(a)) == m))
             rows.append({
                 "name":        m,
                 "capacity":    base,
@@ -1871,9 +1874,10 @@ def build_discrepancies_tab(pbis, df_cap=None, s79_tasks=None, stale_df=None):
         # dashboard_name -> excel_name in compute_capacity()).
         api_to_dash = {v: k for k, v in name_map.items()}
 
-        # Who has at least one ticket assigned in the current sprint?
+        # Who has at least one ticket assigned in the current sprint? Canonicalise
+        # so dotted usernames ('suyog.joshi') match roster names ('Suyog Joshi').
         assignees_with_tickets = set(
-            str(a) for a in s79_tasks["Assigned To"].dropna().unique() if a
+            _canonical_person(str(a)) for a in s79_tasks["Assigned To"].dropna().unique() if a
         )
         # Member-to-team lookup
         member_to_team = {m: t for t, ms in CFG.TEAMS.items() for m in ms}
@@ -1881,7 +1885,7 @@ def build_discrepancies_tab(pbis, df_cap=None, s79_tasks=None, stale_df=None):
         for api_name, hours in cap_by_member.items():
             if not hours or hours <= 0:
                 continue
-            dash_name = api_to_dash.get(api_name, api_name)
+            dash_name = _canonical_person(api_to_dash.get(api_name, api_name))
             if dash_name not in team_members:
                 continue
             if dash_name in assignees_with_tickets:
@@ -2113,7 +2117,12 @@ def build_story_view_tab(pbis):
     """Story View tab: every story in the sprint as an expandable card. Click a
     story to reveal its attached info (sub-tasks with est/spent, plus the state,
     team, sizing, release and goal-date badges on the card)."""
-    stories = [p for p in pbis if p.get("type") != "Bug"]
+    # True stories only: exclude Bugs and the [Dev]/[QA] sub-task-style rows —
+    # keep items whose title starts with [PRODUCT] or [TECHNICAL] (same rule the
+    # rest of the dashboard uses for "true PBIs").
+    stories = [p for p in pbis
+               if p.get("type") != "Bug"
+               and re.match(r'^\[(product|technical)\]', str(p.get("title", "")).strip(), re.I)]
 
     def _idnum(p):
         m = re.search(r"(\d+)", str(p.get("id", "")))
