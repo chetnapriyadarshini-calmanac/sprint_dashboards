@@ -1262,6 +1262,25 @@ def _short_team(name: str) -> str:
     return s.strip()
 
 
+_GOAL_LABELS = {
+    "poapproved": "PO Approved",
+    "readyfortechanalysis": "Ready for Tech Analysis",
+    "readyfordev": "Ready for Dev",
+    "readyforqa": "Ready for QA",
+    "sttodo": "ST To Do",
+    "readyforlive": "Ready for Live",
+}
+
+
+def _goal_label(goal) -> str:
+    """Readable 'Goal for the Sprint' label from the normalised goal key."""
+    if not goal or str(goal).lower() in ("story", "nogoal"):
+        return ""
+    key = str(goal).lower().replace(" ", "").replace("-", "").replace("_", "")
+    key = re.sub(r"^sprint\d+goal", "", key)   # tolerate a raw 'SprintNGoal-' prefix
+    return _GOAL_LABELS.get(key, str(goal))
+
+
 def build_pbi_card(pbi, idx, goal, scope="g", body="tasks"):
     pid    = pbi["id"]
     title  = pbi["title"]
@@ -1297,6 +1316,16 @@ def build_pbi_card(pbi, idx, goal, scope="g", body="tasks"):
     prg_badge = pbi_progress_badge(state, done_st, CFG.INPROGRESS_STATES)
     task_sum  = (f'{pbi["task_done"]}/{pbi["task_total"]} tasks&nbsp;|&nbsp;'
                  f'{int(pbi["est_h"])}h est&nbsp;|&nbsp;{int(pbi["spent_h"])}h spent')
+
+    # Right column. In Story View show the story's Goal for the Sprint; elsewhere
+    # keep the progress badge + task/est/spent summary.
+    if body == "fields":
+        _gl = _goal_label(goal)
+        right_html = (f'<span title="Goal for the Sprint" style="background:#eef2ff;color:#4338ca;'
+                      f'padding:3px 10px;border-radius:12px;font-size:12px;font-weight:700;'
+                      f'white-space:nowrap">{_gl or "—"}</span>')
+    else:
+        right_html = (f'{prg_badge}<span style="font-size:10px;color:#94a3b8">{task_sum}</span>')
 
     task_rows = "".join(build_task_row(t) for t in pbi["tasks"])
     task_table = ""
@@ -1334,7 +1363,7 @@ def build_pbi_card(pbi, idx, goal, scope="g", body="tasks"):
         expand_body = task_table
 
     uid = f"pb-{scope}-{pid}"
-    return f"""<div onclick="var e=document.getElementById('{uid}'),i=document.getElementById('{uid}-i');if(e.style.display==='none'){{e.style.display='block';i.textContent='−'}}else{{e.style.display='none';i.textContent='+'}}" style="display:flex;align-items:center;gap:8px;padding: 10px 14px; cursor: pointer; background: rgb(255, 255, 255); user-select: none;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='#fff'"><span id="{uid}-i" style="color:#94a3b8;font-size:12px;flex-shrink:0;width:12px;text-align:center">+</span><div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:2px"><span style="font-size:11px;color:#94a3b8">#{pid}</span>{hotfix_badge}{state_badge(state)}{team_badge}{size_badge}{rel_badge}{date_badge} </div><div style="font-size:13px;font-weight:500;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{title}</div><div style="font-size:11px;color:#64748b;margin-top:1px">{pbi["assignee"]}</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">{prg_badge}<span style="font-size:10px;color:#94a3b8">{task_sum}</span></div></div><div id="{uid}" style="display:none;padding:12px 14px;border-top:1px solid #f1f5f9;background:#fafafa">{expand_body}</div>"""
+    return f"""<div onclick="var e=document.getElementById('{uid}'),i=document.getElementById('{uid}-i');if(e.style.display==='none'){{e.style.display='block';i.textContent='−'}}else{{e.style.display='none';i.textContent='+'}}" style="display:flex;align-items:center;gap:8px;padding: 10px 14px; cursor: pointer; background: rgb(255, 255, 255); user-select: none;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='#fff'"><span id="{uid}-i" style="color:#94a3b8;font-size:12px;flex-shrink:0;width:12px;text-align:center">+</span><div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:2px"><span style="font-size:11px;color:#94a3b8">#{pid}</span>{hotfix_badge}{state_badge(state)}{team_badge}{size_badge}{rel_badge}{date_badge} </div><div style="font-size:13px;font-weight:500;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{title}</div><div style="font-size:11px;color:#64748b;margin-top:1px">{pbi["assignee"]}</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">{right_html}</div></div><div id="{uid}" style="display:none;padding:12px 14px;border-top:1px solid #f1f5f9;background:#fafafa">{expand_body}</div>"""
 
 def build_goal_bucket(goal_name, pbis_in_goal):
     done_states = CFG.GOAL_DONE_STATES.get(goal_name, CFG.GOAL_DONE_STATES["_default"])
@@ -2156,6 +2185,10 @@ def build_story_view_tab(pbis):
         '<div style="font-size:15px;font-weight:700;color:#1e293b;margin-bottom:2px">📖 Story View</div>'
         f'<div style="font-size:12px;color:#64748b;margin-bottom:6px">{len(stories)} stories in the '
         f'sprint — click any story to expand its sub-tasks and details.</div>'
+        '<div style="display:flex;justify-content:space-between;align-items:center;'
+        'padding:6px 14px;border-bottom:2px solid #e2e8f0;font-size:11px;font-weight:700;'
+        'color:#64748b;text-transform:uppercase;letter-spacing:.03em">'
+        '<span>Story</span><span>Goal for Sprint</span></div>'
         + "\n".join(sections) +
         '</div>'
     )
