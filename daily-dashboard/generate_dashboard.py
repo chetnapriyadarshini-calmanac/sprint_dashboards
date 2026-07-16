@@ -2397,10 +2397,34 @@ if __name__ == "__main__":
         s79_tasks, history, cap_lookup,
         CFG.SPRINT_DAY, CFG.SPRINT_TOTAL_DAYS
     )
+    # Worklog-based effort since the previous daily snapshot, attributed to the
+    # ACTUAL author (not the task assignee). Fixes cases where person A logs time
+    # on person B's ticket. Falls back to {} on any failure (DSM then uses the
+    # assignee-based Completed-Work deltas).
+    worklog_by_member = {}
+    try:
+        import jira_fetch as _jf
+        import datetime as _dtm
+        _snaps = history.get("snapshots", [])
+        if len(_snaps) >= 2:
+            _pd = _dtm.date.fromisoformat(_snaps[-2]["date"])
+        else:
+            _pd = _dtm.date.today() - _dtm.timedelta(days=1)
+        _since_ms = int(_dtm.datetime(_pd.year, _pd.month, _pd.day).timestamp() * 1000)
+        _raw_wl = _jf.load_worklog_hours(jira_get_context(), _since_ms)
+        for _author, _hrs in _raw_wl.items():
+            _m = _canonical_person(str(_author))
+            if _m:
+                worklog_by_member[_m] = worklog_by_member.get(_m, 0.0) + _hrs
+        print(f"   ⏱ worklog effort since {_pd}: {len(worklog_by_member)} member(s) logged")
+    except Exception as _e:
+        print(f"   ⚠ worklog effort fetch failed ({_e}); DSM uses assignee deltas.")
+
     print("🎯 Building DSM Insights tab ...")
     dsm_tab = build_dsm_tab(
         s79_tasks, history, pbis, metrics,
-        cap_lookup, CFG.SPRINT_DAY, CFG.SPRINT_TOTAL_DAYS
+        cap_lookup, CFG.SPRINT_DAY, CFG.SPRINT_TOTAL_DAYS,
+        worklog_by_member=worklog_by_member
     )
     print("⚡ Building Risk & Health tab ...")
     risk_tab = build_risk_health_tab(

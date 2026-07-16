@@ -468,7 +468,8 @@ def build_daily_tracking_tab(s79_tasks, history: dict, cap_lookup: dict, sprint_
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def build_dsm_tab(s79_tasks, history: dict, pbis: list, metrics: dict,
-                  cap_lookup: dict, sprint_day: int, sprint_total_days: int):
+                  cap_lookup: dict, sprint_day: int, sprint_total_days: int,
+                  worklog_by_member: dict | None = None):
     snaps     = history.get("snapshots", [])
     prev      = snaps[-2] if len(snaps) >= 2 else None
     prev_task = prev.get("task_states", {}) if prev else {}
@@ -543,7 +544,9 @@ def build_dsm_tab(s79_tasks, history: dict, pbis: list, metrics: dict,
             member_activity[name] = {"delta": 0, "done_today": 0, "started_today": 0}
 
     for name, act in member_activity.items():
-        if act["delta"] == 0 and sprint_day > 1 and prev:
+        # Prefer worklog-author hours (accurate) over the assignee-based delta.
+        logged = worklog_by_member.get(name, 0.0) if worklog_by_member else act["delta"]
+        if logged <= 0 and sprint_day > 1 and prev:
             no_progress_members.append(name)
 
     # Auto talking points
@@ -587,36 +590,34 @@ def build_dsm_tab(s79_tasks, history: dict, pbis: list, metrics: dict,
             m_done   = int((m_tasks["State"] == "Done").sum())
             m_total  = int(m_tasks.shape[0])
 
-            # Check whether this person actually logged hours on OTHER tasks today.
-            # member_activity[person]["delta"] is the total effort delta across ALL
-            # their sprint tasks.  A person can have individual In-Progress tasks
-            # with zero delta (task-level stall) while still having logged hours
-            # elsewhere — they should NOT be labelled "0 hours logged today".
-            person_total_delta = round(member_activity.get(person, {}).get("delta", 0.0), 1)
-
-            if person_total_delta > 0:
-                # Person is active today — specific tasks just had no new hours.
-                reason       = (f"No progress on these tasks {window} "
-                                f"(logged {person_total_delta}h on other tasks) — "
-                                f"{m_done}/{m_total} tasks done, {m_spent:.0f}h/{m_est:.0f}h spent")
-                badge_label  = "STALLED"
-                badge_bg     = "#fef3c7"
-                badge_color  = "#d97706"
-                card_bg      = "#fffbeb"
-                card_border  = "#fcd34d"
-                row_divider  = "#fef3c7"
-                reason_color = "#d97706"
+            # How much did THIS person actually log in the window? Prefer the
+            # worklog-author signal (accurate even when they logged on someone
+            # else's ticket); fall back to the assignee-based Completed-Work delta.
+            if worklog_by_member:
+                person_logged = round(worklog_by_member.get(person, 0.0), 1)
             else:
-                # Person has truly logged nothing today.
-                reason       = (f"In Progress with 0 hours logged {window} — "
-                                f"{m_done}/{m_total} tasks done, {m_spent:.0f}h/{m_est:.0f}h spent")
-                badge_label  = "STUCK"
-                badge_bg     = "#fee2e2"
-                badge_color  = "#dc2626"
-                card_bg      = "#fff5f5"
-                card_border  = "#fca5a5"
-                row_divider  = "#fee2e2"
-                reason_color = "#dc2626"
+                person_logged = round(member_activity.get(person, {}).get("delta", 0.0), 1)
+
+            if person_logged > 0:
+                # Actively logging effort in the window (on these or ANY other
+                # tickets) — they're working, so don't flag them.
+                continue
+            if m_spent > 0:
+                # They HAVE logged effort on their sprint work overall (these
+                # particular sub-tasks just have no hours yet — often not-started
+                # future work). An active contributor is not a blocker. Skip.
+                continue
+            # Only genuinely untouched in-progress work remains: In Progress with
+            # zero hours logged anywhere on this person's sprint tasks.
+            reason       = (f"In Progress with no hours logged yet — "
+                            f"{m_done}/{m_total} tasks done, {m_spent:.0f}h/{m_est:.0f}h spent")
+            badge_label  = "STUCK"
+            badge_bg     = "#fee2e2"
+            badge_color  = "#dc2626"
+            card_bg      = "#fff5f5"
+            card_border  = "#fca5a5"
+            row_divider  = "#fee2e2"
+            reason_color = "#dc2626"
 
             task_rows = ""
             for tid, title in p_tasks[:8]:

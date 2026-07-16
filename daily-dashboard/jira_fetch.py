@@ -80,6 +80,10 @@ _STORY_DETAIL_FIELD_NAMES = [
 ]
 _F_STORY_DETAILS: list = []   # resolved [(field_id, label), ...] in display order
 
+# Numeric issue IDs from the most recent load_dataframe() sprint fetch — used to
+# scope worklog-based effort attribution (see load_worklog_hours).
+_LAST_SPRINT_ISSUE_IDS: set = set()
+
 _DASHBOARD_COLS = ["ID", "Title", "Work Item Type", "State", "Assigned To",
                    "Iteration Path", "Tags", "Original Estimate", "Completed Work",
                    "Sizing", "Release", "Team", "StoryFields"]
@@ -387,6 +391,58 @@ def _search(ctx: dict[str, Any], jql: str) -> list[dict[str, Any]]:
     return out
 
 
+# ── Worklog-based effort (attributed to the actual author) ──────────────────
+def load_worklog_hours(ctx: dict[str, Any], since_epoch_ms: int,
+                       issue_ids=None) -> dict[str, float]:
+    """Return {worklog author displayName: hours} for worklogs UPDATED since
+    `since_epoch_ms`, restricted to `issue_ids` (numeric ID strings; defaults to
+    the last sprint fetched by load_dataframe).
+
+    Uses the bulk /worklog/updated + /worklog/list endpoints, so it's a handful
+    of calls regardless of issue count, and attributes effort to whoever actually
+    logged it — independent of the task's assignee. Returns {} on any failure so
+    callers can fall back gracefully."""
+    import json as _json
+    scope = {str(i) for i in (issue_ids if issue_ids is not None else _LAST_SPRINT_ISSUE_IDS)}
+    if not scope:
+        return {}
+    since = int(since_epoch_ms)
+
+    wl_ids: list = []
+    url = f"{ctx['api_v3']}/worklog/updated?since={since}"
+    try:
+        while url:
+            r = ctx["session"].get(url, timeout=ctx["timeout"])
+            r.raise_for_status()
+            body = r.json()
+            wl_ids += [v.get("worklogId") for v in body.get("values", [])
+                       if v.get("worklogId") is not None]
+            if body.get("lastPage", True):
+                break
+            url = body.get("nextPage")
+    except Exception as e:
+        print(f"   ⚠ worklog/updated failed ({e}); effort-by-author unavailable.")
+        return {}
+
+    out: dict[str, float] = {}
+    for i in range(0, len(wl_ids), 1000):
+        chunk = wl_ids[i:i + 1000]
+        try:
+            r = ctx["session"].post(f"{ctx['api_v3']}/worklog/list",
+                                    json={"ids": chunk}, timeout=ctx["timeout"])
+            r.raise_for_status()
+            for wl in r.json():
+                if str(wl.get("issueId")) not in scope:
+                    continue
+                author = ((wl.get("author") or {}).get("displayName") or "").strip()
+                if not author:
+                    continue
+                out[author] = out.get(author, 0.0) + (wl.get("timeSpentSeconds") or 0) / 3600.0
+        except Exception as e:
+            print(f"   ⚠ worklog/list chunk failed ({e}); partial effort data.")
+    return out
+
+
 # ── Row builders ────────────────────────────────────────────────────────────
 def _pbi_row(issue: dict[str, Any], sprint_number: int,
              pbi_titles: dict[str, str]) -> dict[str, Any]:
@@ -574,6 +630,12 @@ def load_dataframe(release: str | None = None, sprint=None,
     for i in range(0, len(parent_keys), 50):
         chunk = ",".join(parent_keys[i:i+50])
         subs += _search(ctx, f"parent in ({chunk})")
+
+    # Remember every in-sprint issue's numeric ID so load_worklog_hours() can
+    # scope worklog effort to this sprint.
+    global _LAST_SPRINT_ISSUE_IDS
+    _LAST_SPRINT_ISSUE_IDS = {str(i["id"]) for i in parents if i.get("id")} \
+        | {str(s["id"]) for s in subs if s.get("id")}
 
     # Pass 3: parent Epic titles, so Stories can be referred to by their PBI.
     epic_keys = sorted({_parent_key(i["fields"]) for i in parents
