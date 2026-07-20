@@ -184,11 +184,30 @@ One-time setup:
 
 For the **daily 10:00 job**: do step 6 once, signed in, on the machine that will run it. After that it runs headless — as long as the token doesn't expire (hence the *Internal* app recommendation). Delete `.gcp_oauth_token.json` to force a fresh sign-in. The token/key are personal secrets — never commit them (already git-ignored).
 
+> **OAuth token = you.** The cached `.gcp_oauth_token.json` is a portable bearer credential: anyone who copies it (plus the `.gcp_oauth_client.json`) can run the dashboard **as you** and read every Drive file your account can see — no password, no browser. For shared or unattended runs, prefer the **service account** below so nothing runs under a personal identity.
+
+### Service account (shared automation — no personal token, recommended for teams)
+
+Reads the capacity Sheet as a dedicated non-human identity instead of as you. Any teammate or the scheduled job can generate the dashboard with only the shared key file — no one impersonates a person. The loader already tries this path **first** (before OAuth and public), so once the key is in place it's used automatically.
+
+One-time setup:
+
+1. In **Google Cloud Console** (same project where the Drive API is enabled), go to **IAM & Admin → Service Accounts → Create service account**. Name it e.g. `capacity-dashboard-reader`. No project IAM roles are needed — access is granted by sharing the file, not by roles.
+2. Open the new service account → **Keys → Add key → Create new key → JSON**. Download it. **This file is a secret — treat it like a password.**
+3. Confirm the **Google Drive API** is enabled on that project (**APIs & Services → Library → Google Drive API → Enable**).
+4. Copy the service account's email (looks like `capacity-dashboard-reader@<project>.iam.gserviceaccount.com`). Open the capacity file in Drive → **Share** → paste that email → **Viewer** → send. Works whether the file is a native Google Sheet or an uploaded `.xlsx`.
+5. Save the downloaded JSON as **`.gcp_sa.json` at the repo root** (git-ignored, auto-discovered), or set `CAPACITY_SA_KEY` in the config to its path.
+6. `pip install -r requirements.txt`, then from this folder run `python capacity_excel.py` — it should print the capacity table with **no browser prompt**. After that, `generate_dashboard.py` uses it automatically.
+
+> **Org caveat:** a service account is an identity *external* to your Workspace. If the domain restricts sharing outside the org, the share in step 4 may be blocked — ask IT to allow it, or place the file in a **Shared Drive** the service account is added to.
+
+Once the service account works, delete any personal `.gcp_oauth_token.json` / `.gcp_oauth_client.json` from shared machines so nothing runs under a personal identity.
+
 ### Alternatives
 
 - **Committed `.xlsx` (no auth, most reliable for automation)** — a `Team_Capacity.xlsx` is committed in this folder as a fallback/reference. To use it instead, set `CAPACITY_XLSX = "Team_Capacity.xlsx"`; edit the file and commit when capacity changes. `.gitignore` tracks only this workbook (stray `*.xlsx` and Excel lock files stay out).
 - **Absolute local `.xlsx`** — a real `.xlsx` in a Drive/OneDrive synced folder (e.g. `G:\My Drive\Team_Capacity.xlsx`). Must be a real `.xlsx`, not a native Google Sheet (which syncs only as a `.gsheet` pointer).
-- **Service account** — set `CAPACITY_SA_KEY` and share the Sheet with the service account's `client_email`. Needs IT to allow a service account.
+- **Service account** — the recommended path for shared/unattended runs; see [Service account](#service-account-shared-automation--no-personal-token-recommended-for-teams) above.
 - **Public URL** — a Sheet shared "Anyone with the link – Viewer"; no credentials.
 
 The loader tries service account → OAuth → public in that order for a Sheet URL. If a run can't read the workbook, it prints a specific message telling you what to fix.
