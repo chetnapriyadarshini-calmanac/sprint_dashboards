@@ -21,11 +21,11 @@ DAILY USAGE
 from datetime import date, datetime, timedelta
 
 # -- Sprint Identity ----------------------------------------------------------
-SPRINT_NUMBER      = 2
-SPRINT_NAME        = "Sprint 2"          # must match Iteration Path substring
+SPRINT_NUMBER      = 3
+SPRINT_NAME        = "Sprint 3"          # must match Iteration Path substring
 SPRINT_TOTAL_DAYS  = 10
-SPRINT_DATES       = "July 6 - July 17, 2026"
-SPRINT_START_DATE  = "2026-07-06"
+SPRINT_DATES       = "July 20 - July 31, 2026"
+SPRINT_START_DATE  = "2026-20-07"
 
 
 def _compute_sprint_day(start_str: str, total_days: int) -> int:
@@ -78,9 +78,9 @@ DATA_SOURCE        = "jira"
 #                       names EXACTLY (case- and space-sensitive).
 RELEASE_NAME       = "REL-AUG-26"      # <-- current Fix Version, or None
 JIRA_SPRINT_NAMES  = [
-    "MPM Calmers Sprint 2",
-    "MPM Crackers Sprint 2",
-    "MPM Knackers Sprint 2",
+    "MPM Calmers Sprint 3",
+    "MPM Crackers Sprint 3",
+    "MPM Knackers Sprint 3",
     # "MPM QA Automation Sprint 1",   # <-- add if QA Automation has its own sprint
 ]
 # Back-compat single value (first entry); used as a display/label fallback.

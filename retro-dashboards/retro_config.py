@@ -25,10 +25,10 @@ candidates) for the JIRA retro generators.
 """
 
 # ─── Sprint Identity (the sprint that just ENDED) ───────────────────────────
-SPRINT_NUMBER     = 83
-SPRINT_NAME       = "Sprint 83"          # Iteration Path substring match
-SPRINT_DATES      = "June 8  - June 19, 2026"
-SPRINT_END_DATE   = "2026-06-19"         # ISO YYYY-MM-DD; used for "bugs open
+SPRINT_NUMBER     = 2
+SPRINT_NAME       = "Sprint 2"          # Iteration Path substring match
+SPRINT_DATES      = "July 06  - July 17, 2026"
+SPRINT_END_DATE   = "2026-07-17"         # ISO YYYY-MM-DD; used for "bugs open
                                          # at sprint end" via revisions walk
 SPRINT_AUDIENCE   = "management"           # "internal" or "management"
 SPRINT_TOTAL_DAYS = 10
